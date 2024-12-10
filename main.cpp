@@ -113,7 +113,7 @@ int main()
         constexpr double rel = 8.9442719099991587856366946749251;
         auto check = [&rel](double x) -> bool { return std::abs(x - rel) < 1e-5; };
         start = std::chrono::high_resolution_clock::now();
-        double only = hyp::Only(check, tasks, 80.0)
+        double only = HypOnly(check, tasks, 80.0)
                           .then(
                               [](std::pair<size_t, double>& res)
                               {
