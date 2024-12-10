@@ -26,10 +26,6 @@ int main()
                 [&rGen](double x) -> double
                 {
                     auto start = std::chrono::high_resolution_clock::now();
-                    if (x > 10)
-                    {
-                        return -1;
-                    }
                     std::uniform_real_distribution<> tDis(0.1, 1);
                     std::uniform_real_distribution<> eDis(-0.08, 0.08);
                     double t = tDis(rGen);
@@ -38,16 +34,12 @@ int main()
                     auto end = std::chrono::high_resolution_clock::now();
                     std::chrono::duration<double, std::milli> elapsed = end - start;
                     std::cout << "[Index 1]: use " << elapsed.count() << "ms" << std::endl;
-                    return std::sqrt(x) + e;
+                    return x > 10 ? (std::sqrt(x) + e) : -1;
                 }),
             HypTask<double(double)>(
                 [&rGen](double x) -> double
                 {
                     auto start = std::chrono::high_resolution_clock::now();
-                    if (x > 50)
-                    {
-                        return -1;
-                    }
                     std::uniform_real_distribution<> tDis(1, 9.9);
                     std::uniform_real_distribution<> eDis(-0.0009, 0.0009);
                     double t = tDis(rGen);
@@ -56,16 +48,12 @@ int main()
                     auto end = std::chrono::high_resolution_clock::now();
                     std::chrono::duration<double, std::milli> elapsed = end - start;
                     std::cout << "[Index 2]: use " << elapsed.count() << "ms" << std::endl;
-                    return std::sqrt(x) + e;
+                    return x > 50 ? (std::sqrt(x) + e) : -1;
                 }),
             HypTask<double(double)>(
                 [&rGen](double x) -> double
                 {
                     auto start = std::chrono::high_resolution_clock::now();
-                    if (x > 100)
-                    {
-                        return -1;
-                    }
                     std::uniform_real_distribution<> tDis(10, 19.9);
                     std::uniform_real_distribution<> eDis(-0.00002, 0.00002);
                     double t = tDis(rGen);
@@ -74,7 +62,7 @@ int main()
                     auto end = std::chrono::high_resolution_clock::now();
                     std::chrono::duration<double, std::milli> elapsed = end - start;
                     std::cout << "[Index 3]: use " << elapsed.count() << "ms" << std::endl;
-                    return std::sqrt(x) + e;
+                    return x > 100 ? (std::sqrt(x) + e) : -1;
                 }),
             HypTask<double(double)>(
                 [&rGen](double x) -> double
@@ -123,7 +111,7 @@ int main()
         std::cout << "sqrt(8.0) = " << fast << " --> [" << elapsed.count() << "ms]" << std::endl;
 
         constexpr double rel = 8.9442719099991587856366946749251;
-        auto check = [&rel](double x) -> bool { return std::abs(x - rel) < 1e-3; };
+        auto check = [&rel](double x) -> bool { return std::abs(x - rel) < 1e-5; };
         start = std::chrono::high_resolution_clock::now();
         double only = hyp::Only(check, tasks, 80.0)
                           .then(
