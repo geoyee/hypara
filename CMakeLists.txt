@@ -25,7 +25,7 @@ else ()
   add_compile_options($<$<CXX_COMPILER_ID:GNU,Clang>:-Wall$<SEMICOLON>-Wextra>)
   # add_compile_options($<$<CXX_COMPILER_ID:GNU,Clang>:-Werror>)
   add_compile_options(
-    $<$<CXX_COMPILER_ID:GNU,Clang>:-Wno-unknown-pragmas<SEMICOLON>-Werror=uninitialized$<SEMICOLON>-Werror=return-type$<SEMICOLON>-Wconversion$<SEMICOLON>-Wsign-compare$<SEMICOLON>-Werror=unused-result$<SEMICOLON>-Werror=suggest-override$<SEMICOLON>-Wzero-as-null-pointer-constant$<SEMICOLON>-Wmissing-declarations$<SEMICOLON>-Wold-style-cast$<SEMICOLON>-Wnon-virtual-dtor>
+    $<$<CXX_COMPILER_ID:GNU,Clang>:-Wno-unknown-pragmas$<SEMICOLON>-Werror=uninitialized$<SEMICOLON>-Werror=return-type$<SEMICOLON>-Wconversion$<SEMICOLON>-Wsign-compare$<SEMICOLON>-Werror=unused-result$<SEMICOLON>-Werror=suggest-override$<SEMICOLON>-Wzero-as-null-pointer-constant$<SEMICOLON>-Wmissing-declarations$<SEMICOLON>-Wold-style-cast$<SEMICOLON>-Wnon-virtual-dtor>
     )
   add_link_options($<$<CXX_COMPILER_ID:GNU,Clang>:-flto>)
 endif ()
