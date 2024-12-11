@@ -46,9 +46,9 @@ public:
     }
 
     template<typename Func>
-    auto then(Func&& fn) -> Task<typename std::result_of<Func(Ret)>::type(Args...)>
+    auto then(Func&& fn) -> Task<typename std::invoke_result_t<Func, Ret>(Args...)>
     {
-        using result_type = typename std::result_of<Func(Ret)>::type;
+        using result_type = typename std::invoke_result_t<Func, Ret>;
 
         auto func = std::move(m_fn);
         auto task = Task<result_type(Args...)>(
@@ -138,7 +138,7 @@ inline static auto All(Range& range, Args&&...args) -> Task<std::vector<typename
 {
     using result_type = typename Range::value_type::return_type;
 
-    return [&range, tArgs = std::tuple<Args...>(std::forward<Args>(args)...)]() mutable
+    auto resFn = [&range, tArgs = std::tuple<Args...>(std::forward<Args>(args)...)]() mutable
     {
         std::vector<std::shared_future<result_type>> funcs;
         for (auto& task : range)
@@ -154,14 +154,23 @@ inline static auto All(Range& range, Args&&...args) -> Task<std::vector<typename
         }
         return res;
     };
+
+    return static_cast<std::function<std::vector<result_type>()>>(resFn);
 }
 
 template<typename Range, typename... Args>
 inline static auto Any(Range& range,
                        Args&&...args) -> Task<std::pair<size_t, typename Range::value_type::return_type>()>
 {
-    return [&range, tArgs = std::tuple<Args...>(std::forward<Args>(args)...)]() mutable
-    { return aux::getAnyResultPair(aux::transform(range, tArgs)); };
+    using result_type = typename Range::value_type::return_type;
+
+    auto resFn = [&range, tArgs = std::tuple<Args...>(std::forward<Args>(args)...)]() mutable
+    {
+        auto transforms = aux::transform(range, tArgs);
+        return aux::getAnyResultPair(transforms);
+    };
+
+    return static_cast<std::function<std::pair<size_t, result_type>()>>(resFn);
 }
 
 template<typename Func, typename Range, typename... Args>
@@ -169,8 +178,15 @@ inline static auto Only(Func&& fn,
                         Range& range,
                         Args&&...args) -> Task<std::pair<size_t, typename Range::value_type::return_type>()>
 {
-    return [&fn, &range, tArgs = std::tuple<Args...>(std::forward<Args>(args)...)]()
-    { return aux::getOnlyResultPair(fn, aux::transform(range, tArgs)); };
+    using result_type = typename Range::value_type::return_type;
+
+    auto resFn = [&fn, &range, tArgs = std::tuple<Args...>(std::forward<Args>(args)...)]()
+    {
+        auto transforms = aux::transform(range, tArgs);
+        return aux::getOnlyResultPair(fn, transforms);
+    };
+
+    return static_cast<std::function<std::pair<size_t, result_type>()>>(resFn);
 }
 } // namespace hyp
 

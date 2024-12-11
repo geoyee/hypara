@@ -30,11 +30,11 @@ int main()
                     std::uniform_real_distribution<> eDis(-0.08, 0.08);
                     double t = tDis(rGen);
                     double e = eDis(rGen);
-                    std::this_thread::sleep_for(std::chrono::milliseconds((int)(t * 100)));
+                    std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(t * 100)));
                     auto end = std::chrono::high_resolution_clock::now();
                     std::chrono::duration<double, std::milli> elapsed = end - start;
                     std::cout << "[Index 1]: use " << elapsed.count() << "ms" << std::endl;
-                    return x > 10 ? (std::sqrt(x) + e) : -1;
+                    return x < 10 ? (std::sqrt(x) + e) : -1;
                 }),
             HypTask<double(double)>(
                 [&rGen](double x) -> double
@@ -44,11 +44,11 @@ int main()
                     std::uniform_real_distribution<> eDis(-0.0009, 0.0009);
                     double t = tDis(rGen);
                     double e = eDis(rGen);
-                    std::this_thread::sleep_for(std::chrono::milliseconds((int)(t * 100)));
+                    std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(t * 100)));
                     auto end = std::chrono::high_resolution_clock::now();
                     std::chrono::duration<double, std::milli> elapsed = end - start;
                     std::cout << "[Index 2]: use " << elapsed.count() << "ms" << std::endl;
-                    return x > 50 ? (std::sqrt(x) + e) : -1;
+                    return x < 50 ? (std::sqrt(x) + e) : -1;
                 }),
             HypTask<double(double)>(
                 [&rGen](double x) -> double
@@ -58,11 +58,11 @@ int main()
                     std::uniform_real_distribution<> eDis(-0.00002, 0.00002);
                     double t = tDis(rGen);
                     double e = eDis(rGen);
-                    std::this_thread::sleep_for(std::chrono::milliseconds((int)(t * 100)));
+                    std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(t * 100)));
                     auto end = std::chrono::high_resolution_clock::now();
                     std::chrono::duration<double, std::milli> elapsed = end - start;
                     std::cout << "[Index 3]: use " << elapsed.count() << "ms" << std::endl;
-                    return x > 100 ? (std::sqrt(x) + e) : -1;
+                    return x < 100 ? (std::sqrt(x) + e) : -1;
                 }),
             HypTask<double(double)>(
                 [&rGen](double x) -> double
@@ -72,7 +72,7 @@ int main()
                     std::uniform_real_distribution<> eDis(-0.00000000000001, 0.00000000000001);
                     double t = tDis(rGen);
                     double e = eDis(rGen);
-                    std::this_thread::sleep_for(std::chrono::milliseconds((int)(t * 100)));
+                    std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(t * 100)));
                     auto end = std::chrono::high_resolution_clock::now();
                     std::chrono::duration<double, std::milli> elapsed = end - start;
                     std::cout << "[Index 4]: use " << elapsed.count() << "ms" << std::endl;
@@ -82,14 +82,15 @@ int main()
         auto start = std::chrono::high_resolution_clock::now();
         double ave = HypAll(tasks, 8.0)
                          .then(
-                             [](std::vector<double>& res)
+                             [](std::vector<double> res)
                              {
                                  std::cout << "every result is: ";
                                  for (const auto& r : res)
                                  {
                                      std::cout << r << ", ";
                                  }
-                                 double ave = (double)(std::accumulate(res.begin(), res.end(), 0.0) / res.size());
+                                 double ave = static_cast<double>(std::accumulate(res.begin(), res.end(), 0.0) /
+                                                                  static_cast<double>(res.size()));
                                  return ave;
                              })
                          .get();
@@ -100,9 +101,9 @@ int main()
         start = std::chrono::high_resolution_clock::now();
         double fast = HypAny(tasks, 8.0)
                           .then(
-                              [](std::pair<size_t, double>& res)
+                              [](std::pair<size_t, double> res)
                               {
-                                  std::cout << "fast task index = " << (int)res.first << " and ";
+                                  std::cout << "fast task index = " << static_cast<int>(res.first) << " and ";
                                   return res.second;
                               })
                           .get();
@@ -115,9 +116,9 @@ int main()
         start = std::chrono::high_resolution_clock::now();
         double only = HypOnly(check, tasks, 80.0)
                           .then(
-                              [](std::pair<size_t, double>& res)
+                              [](std::pair<size_t, double> res)
                               {
-                                  std::cout << "only task index = " << (int)res.first << " and ";
+                                  std::cout << "only task index = " << static_cast<int>(res.first) << " and ";
                                   return res.second;
                               })
                           .get();
