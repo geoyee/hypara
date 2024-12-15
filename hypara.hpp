@@ -68,16 +68,19 @@ private:
 namespace aux
 {
 template<typename Ret>
-struct RangeTrait
+struct range_trait
 {
     using type = Ret;
 };
 
 template<typename Ret>
-struct RangeTrait<std::shared_future<Ret>>
+struct range_trait<std::shared_future<Ret>>
 {
     using type = Ret;
 };
+
+template<typename Ret>
+using range_trait_t = typename range_trait<Ret>::type;
 
 template<typename Range, typename... Args>
 auto transform(Range& range,
@@ -93,7 +96,7 @@ auto transform(Range& range,
 }
 
 template<typename Range>
-auto getAnyResultPair(Range& funcs) -> std::pair<size_t, typename RangeTrait<typename Range::value_type>::type>
+auto getAnyResultPair(Range& funcs) -> std::pair<size_t, range_trait_t<typename Range::value_type>>
 {
     size_t count = funcs.size();
     while (true)
@@ -109,13 +112,15 @@ auto getAnyResultPair(Range& funcs) -> std::pair<size_t, typename RangeTrait<typ
 }
 
 template<typename Func,
+         typename Ret,
          typename Range,
-         std::enable_if_t<std::is_invocable_r<bool, Func, typename RangeTrait<typename Range::value_type>::type>::value,
-                          bool> = true>
-auto getOnlyResultPair(Func& cfn,
-                       Range& funcs) -> std::pair<size_t, typename RangeTrait<typename Range::value_type>::type>
+         std::enable_if_t<std::is_invocable_r_v<bool, Func, range_trait_t<typename Range::value_type>>, bool> = true,
+         std::enable_if_t<std::is_same_v<typename std::decay_t<Ret>, range_trait_t<typename Range::value_type>>, bool> =
+             true>
+auto getOnlyResultPair(Func& checkFun, Ret& defVal, Range& funcs) -> std::pair<int, Ret>
 {
     size_t count = funcs.size();
+    std::vector<bool> isFinished(count, false);
     while (true)
     {
         for (size_t i = 0; i < count; ++i)
@@ -123,9 +128,14 @@ auto getOnlyResultPair(Func& cfn,
             if (funcs[i].wait_for(std::chrono::milliseconds(1)) == std::future_status::ready)
             {
                 auto res = funcs[i].get();
-                if (cfn(res))
+                isFinished[i] = true;
+                if (checkFun(res))
                 {
-                    return std::make_pair(i, std::move(res));
+                    return std::make_pair(static_cast<int>(i), std::move(res));
+                }
+                if (std::find(isFinished.cbegin(), isFinished.cend(), false) == isFinished.cend())
+                {
+                    return std::make_pair(-1, std::move(defVal));
                 }
             }
         }
@@ -173,20 +183,20 @@ inline static auto Any(Range& range,
     return static_cast<std::function<std::pair<size_t, result_type>()>>(resFn);
 }
 
-template<typename Func, typename Range, typename... Args>
-inline static auto Only(Func&& fn,
-                        Range& range,
-                        Args&&...args) -> Task<std::pair<size_t, typename Range::value_type::return_type>()>
+template<typename Func, typename Ret, typename Range, typename... Args>
+inline static auto Only(Func&& fn, Ret&& def, Range& range, Args&&...args)
+    -> Task<std::pair<int, typename Range::value_type::return_type>()>
 {
     using result_type = typename Range::value_type::return_type;
 
-    auto resFn = [&fn, &range, tArgs = std::tuple<Args...>(std::forward<Args>(args)...)]()
+    auto resFn =
+        [&fn, tDef = std::forward<Ret>(def), &range, tArgs = std::tuple<Args...>(std::forward<Args>(args)...)]()
     {
         auto transforms = aux::transform(range, tArgs);
-        return aux::getOnlyResultPair(fn, transforms);
+        return aux::getOnlyResultPair(fn, tDef, transforms);
     };
 
-    return static_cast<std::function<std::pair<size_t, result_type>()>>(resFn);
+    return static_cast<std::function<std::pair<int, result_type>()>>(resFn);
 }
 } // namespace hyp
 

@@ -1,10 +1,11 @@
 #include "hypara.hpp"
 
-#include <iostream>
 #include <cmath>
-#include <thread>
+#include <iostream>
+#include <limits>
 #include <numeric>
 #include <random>
+#include <thread>
 
 class Timer final
 {
@@ -29,6 +30,8 @@ public:
 private:
     time_point_type m_start;
 };
+
+constexpr double DBL_NaN = std::numeric_limits<double>::quiet_NaN();
 
 int main()
 {
@@ -77,7 +80,7 @@ int main()
                 std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(t * 100)));
                 return std::sqrt(x) + e;
             })};
-    auto check = [](double x) -> bool { return std::abs(x - 2.8284271247461900976033774484194) < 1e-8; };
+    auto check = [](double x) -> bool { return std::abs(x - 2.8284271247461900976033774484194) < 1e-12; };
 
     {
         auto task = tasks[0];
@@ -100,7 +103,7 @@ int main()
         std::cout << "HypAny sqrt(8.0) = " << res.second << " and index = " << res.first << std::endl;
     }
     {
-        auto task = HypOnly(check, tasks, 8.0);
+        auto task = HypOnly(check, DBL_NaN, tasks, 8.0);
         Timer t;
         auto res = task.get();
         std::cout << "HypOnly sqrt(8.0) = " << res.second << " and index = " << res.first << std::endl;
