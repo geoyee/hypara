@@ -25,8 +25,8 @@ class Task;
 /**
  * \brief A class representing a task that can be executed with specified arguments.
  *
- * \tparam Ret The return type of the task.
- * \tparam Args The argument types that the task accepts.
+ * \param Ret The return type of the task.
+ * \param Args The argument types that the task accepts.
  */
 template<typename Ret, typename... Args>
 class Task<Ret(Args...)>
