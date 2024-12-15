@@ -6,6 +6,7 @@
 #pragma warning(disable : 4239)
 #pragma warning(disable : 4996)
 
+#include <algorithm>
 #include <chrono>
 #include <functional>
 #include <future>
