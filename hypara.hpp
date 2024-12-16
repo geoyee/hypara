@@ -157,6 +157,7 @@ auto transform(Range& range,
                std::tuple<Args...> tArgs) -> std::vector<std::shared_future<typename Range::value_type::return_type>>
 {
     using result_type = typename Range::value_type::return_type;
+
     std::vector<std::shared_future<result_type>> funcs;
     for (auto& task : range)
     {
@@ -174,17 +175,28 @@ auto transform(Range& range,
 template<typename Range>
 auto getAnyResultPair(Range& funcs) -> std::pair<size_t, range_trait_t<typename Range::value_type>>
 {
-    size_t count = funcs.size();
-    while (true)
-    {
-        for (size_t i = 0; i < count; ++i)
+    using result_type = typename std::pair<size_t, range_trait_t<typename Range::value_type>>;
+
+    std::promise<result_type> resPro;
+    auto resfut = resPro.get_future();
+    std::thread monitor(
+        [funcs = std::move(funcs), &resPro]() mutable
         {
-            if (funcs[i].wait_for(std::chrono::milliseconds(1)) == std::future_status::ready)
+            size_t count = funcs.size();
+            while (true)
             {
-                return std::make_pair(i, funcs[i].get());
+                for (size_t i = 0; i < count; ++i)
+                {
+                    if (funcs[i].wait_for(std::chrono::milliseconds(1)) == std::future_status::ready)
+                    {
+                        resPro.set_value(std::make_pair(i, funcs[i].get()));
+                        return;
+                    }
+                }
             }
-        }
-    }
+        });
+    monitor.detach();
+    return resfut.get();
 }
 
 /**
@@ -202,31 +214,43 @@ template<typename Func,
          std::enable_if_t<std::is_invocable_r_v<bool, Func, range_trait_t<typename Range::value_type>>, bool> = true,
          std::enable_if_t<std::is_same_v<typename std::decay_t<Ret>, range_trait_t<typename Range::value_type>>, bool> =
              true>
-auto getOnlyResultPair(Func& checkFun, Ret& defVal, Range& funcs) -> std::pair<int, Ret>
+auto getOnlyResultPair(Func& checkFun,
+                       Ret& defVal,
+                       Range& funcs) -> std::pair<int, range_trait_t<typename Range::value_type>>
 {
-    size_t count = funcs.size();
-    std::vector<bool> isFinished(count, false);
-    while (true)
-    {
-        for (size_t i = 0; i < count; ++i)
+    using result_type = typename std::pair<int, range_trait_t<typename Range::value_type>>;
+
+    std::promise<result_type> resPro;
+    auto resfut = resPro.get_future();
+    std::thread monitor(
+        [checkFun = std::move(checkFun), defVal = std::move(defVal), funcs = std::move(funcs), &resPro]() mutable
         {
-            if (funcs[i].wait_for(std::chrono::milliseconds(1)) == std::future_status::ready)
+            size_t count = funcs.size();
+            std::vector<bool> isFinished(count, false);
+            while (true)
             {
-                auto res = funcs[i].get();
-                isFinished[i] = true;
-                if (checkFun(res))
+                for (size_t i = 0; i < count; ++i)
                 {
-                    // Found a matching result, return it.
-                    return std::make_pair(static_cast<int>(i), std::move(res));
-                }
-                // If all tasks have finished, return the default value.
-                if (std::find(isFinished.cbegin(), isFinished.cend(), false) == isFinished.cend())
-                {
-                    return std::make_pair(-1, std::move(defVal));
+                    if (funcs[i].wait_for(std::chrono::milliseconds(1)) == std::future_status::ready)
+                    {
+                        auto res = funcs[i].get();
+                        isFinished[i] = true;
+                        if (checkFun(res))
+                        {
+                            resPro.set_value(std::make_pair(static_cast<int>(i), std::move(res)));
+                            return;
+                        }
+                        if (std::find(isFinished.cbegin(), isFinished.cend(), false) == isFinished.cend())
+                        {
+                            resPro.set_value(std::make_pair(-1, std::move(defVal)));
+                            return;
+                        }
+                    }
                 }
             }
-        }
-    }
+        });
+    monitor.detach();
+    return resfut.get();
 }
 } // namespace aux
 
