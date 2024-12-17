@@ -77,6 +77,7 @@ int main()
                 std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(t * 500)));
                 return std::sqrt(x) + e;
             })};
+    auto best = [](double a, double b) -> bool { return a > b; };
     auto check = [](double x) -> bool { return (x != DBL_NaN) && (std::abs(x - 4.0) < 1e-8); };
 
     {
@@ -93,13 +94,23 @@ int main()
     }
     {
         Timer _;
+        auto res = HypBest(best, tasks, 8.0).get();
+        std::cout << "HypBest sqrt(8.0) = " << res << std::endl;
+    }
+    {
+        Timer _;
         auto res = HypAny(tasks, 8.0).get();
         std::cout << "HypAny sqrt(8.0) = " << res.second << " and index = " << res.first << std::endl;
     }
     {
         Timer _;
-        auto res = HypOnly(check, DBL_NaN, tasks, 16.0).get();
-        std::cout << "HypOnly sqrt(16.0) = " << res.second << " and index = " << res.first << std::endl;
+        auto res = HypAnyWith(check, DBL_NaN, tasks, 16.0).get();
+        std::cout << "HypAnyWith sqrt(16.0) = " << res.second << " and index = " << res.first << std::endl;
+    }
+    {
+        Timer _;
+        auto res = HypOrderWith(check, tasks, 16.0).get();
+        std::cout << "HypOrderWith sqrt(16.0) = " << res.second << " and index = " << res.first << std::endl;
     }
 
     return 0;

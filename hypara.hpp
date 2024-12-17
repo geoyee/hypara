@@ -214,9 +214,9 @@ template<typename Func,
          std::enable_if_t<std::is_invocable_r_v<bool, Func, range_trait_t<typename Range::value_type>>, bool> = true,
          std::enable_if_t<std::is_same_v<typename std::decay_t<Ret>, range_trait_t<typename Range::value_type>>, bool> =
              true>
-auto getOnlyResultPair(Func& checkFun,
-                       Ret& defVal,
-                       Range& funcs) -> std::pair<int, range_trait_t<typename Range::value_type>>
+auto getAnyWithResultPair(Func& checkFun,
+                          Ret& defVal,
+                          Range& funcs) -> std::pair<int, range_trait_t<typename Range::value_type>>
 {
     using result_type = typename std::pair<int, range_trait_t<typename Range::value_type>>;
 
@@ -246,6 +246,43 @@ auto getOnlyResultPair(Func& checkFun,
                             return;
                         }
                     }
+                }
+            }
+        });
+    monitor.detach();
+    return resfut.get();
+}
+
+/**
+ * \brief Get the first result of a task in the range that matches the condition by ordered.
+ *
+ * \param checkFun The condition function.
+ * \param defVal The default value.
+ * \param range The range of tasks.
+ * \return A pair of the index and result of the first task that matches the condition.
+ *         If no task matches the condition, returns the last one.
+ */
+template<typename Func,
+         typename Range,
+         std::enable_if_t<std::is_invocable_r_v<bool, Func, range_trait_t<typename Range::value_type>>, bool> = true>
+auto getOrderWithResultPair(Func& checkFun,
+                            Range& funcs) -> std::pair<size_t, range_trait_t<typename Range::value_type>>
+{
+    using result_type = typename std::pair<size_t, range_trait_t<typename Range::value_type>>;
+
+    std::promise<result_type> resPro;
+    auto resfut = resPro.get_future();
+    std::thread monitor(
+        [checkFun = std::move(checkFun), funcs = std::move(funcs), &resPro]() mutable
+        {
+            size_t count = funcs.size();
+            for (size_t i = 0; i < count; ++i)
+            {
+                auto res = funcs[i].get();
+                if (checkFun(res) || (i == count - 1))
+                {
+                    resPro.set_value(std::make_pair(i, std::move(res)));
+                    return;
                 }
             }
         });
@@ -287,6 +324,38 @@ inline static auto All(Range& range, Args&&...args) -> Task<std::vector<typename
 }
 
 /**
+ * \brief A task that returns a best result of all tasks in the range.
+ *
+ * \param fn The comparison function of result.
+ * \param range The range of tasks.
+ * \param args The arguments to pass to the tasks.
+ * \return A task that the best result of results of all tasks in the range.
+ */
+template<typename Func,
+         typename Range,
+         typename... Args,
+         std::enable_if_t<std::is_invocable_r_v<bool,
+                                                Func,
+                                                typename Range::value_type::return_type,
+                                                typename Range::value_type::return_type>,
+                          bool> = true>
+inline static auto Best(Func&& fn, Range& range, Args&&...args) -> Task<typename Range::value_type::return_type()>
+{
+    using result_type = typename Range::value_type::return_type;
+    using vector_type = std::vector<result_type>;
+
+    return All(range, std::forward<Args>(args)...)
+        .then(
+            [&fn](vector_type tmpRes)
+            {
+                std::sort(tmpRes.begin(),
+                          tmpRes.end(),
+                          [&fn](const result_type& a, const result_type& b) { return fn(a, b); });
+                return tmpRes[0];
+            });
+}
+
+/**
  * \brief A task that returns the first result that is ready.
  *
  * \param range The range of tasks.
@@ -318,7 +387,7 @@ inline static auto Any(Range& range,
  * \return A task that returns the first result that matches the condition.
  */
 template<typename Func, typename Ret, typename Range, typename... Args>
-inline static auto Only(Func&& fn, Ret&& def, Range& range, Args&&...args)
+inline static auto AnyWith(Func&& fn, Ret&& def, Range& range, Args&&...args)
     -> Task<std::pair<int, typename Range::value_type::return_type>()>
 {
     using result_type = typename Range::value_type::return_type;
@@ -327,16 +396,43 @@ inline static auto Only(Func&& fn, Ret&& def, Range& range, Args&&...args)
         [&fn, &range, tDef = std::forward<Ret>(def), tArgs = std::tuple<Args...>(std::forward<Args>(args)...)]()
     {
         auto transforms = aux::transform(range, tArgs);
-        return aux::getOnlyResultPair(fn, tDef, transforms);
+        return aux::getAnyWithResultPair(fn, tDef, transforms);
     };
 
     return static_cast<std::function<std::pair<int, result_type>()>>(resFn);
 }
+
+/**
+ * \brief A task that returns the first result that matches the condition by ordered.
+ *
+ * \param fn The condition function.
+ * \param def The default value.
+ * \param range The range of tasks.
+ * \param args The arguments to pass to the tasks.
+ * \return A task that returns the first result that matches the condition, if no result matched, return the last one.
+ */
+template<typename Func, typename Range, typename... Args>
+inline static auto OrderWith(Func&& fn,
+                             Range& range,
+                             Args&&...args) -> Task<std::pair<size_t, typename Range::value_type::return_type>()>
+{
+    using result_type = typename Range::value_type::return_type;
+
+    auto resFn = [&fn, &range, tArgs = std::tuple<Args...>(std::forward<Args>(args)...)]()
+    {
+        auto transforms = aux::transform(range, tArgs);
+        return aux::getOrderWithResultPair(fn, transforms);
+    };
+
+    return static_cast<std::function<std::pair<size_t, result_type>()>>(resFn);
+}
 } // namespace hyp
 
-#define HypTask hyp::Task
-#define HypAll  hyp::All
-#define HypAny  hyp::Any
-#define HypOnly hyp::Only
+#define HypTask      hyp::Task
+#define HypAll       hyp::All
+#define HypBest      hyp::Best
+#define HypAny       hyp::Any
+#define HypAnyWith   hyp::AnyWith
+#define HypOrderWith hyp::OrderWith
 
 #endif // !_HYPARA_HPP_
