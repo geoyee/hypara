@@ -11,7 +11,7 @@
 
 ## 示例
 
-1. HypAll: 同时开始多个任务，完成后统一返回结果
+1. `HypAll`: 同时开始多个任务，完成后统一返回结果
 
    ```cpp
    using TaskType = HypTask<double(int)>;
@@ -33,7 +33,7 @@
    This block finished and use 2 ms
    ```
 
-2. HypBest: 同时开始多个任务，完成返回按需求排序最符合的结果
+2. `HypBest`: 同时开始多个任务，完成返回按需求排序最符合的结果
 
    ```cpp
    using TaskType = HypTask<double(int)>;
@@ -53,7 +53,7 @@
    This block finished and use 0 ms
    ```
 
-3. HypAny: 同时开始多个任务，返回第一个完成任务的结果
+3. `HypAny`: 同时开始多个任务，返回第一个完成任务的结果
 
    ```cpp
    using TaskType = HypTask<double(int)>;
@@ -92,7 +92,7 @@
    This block finished and use 137 ms
    ```
 
-4. HypAnyWith: 同时开始多个任务，返回第一个完成任务且结果符合要求的结果，若所有结果都不满足，则返回第二个参数为默认值
+4. `HypAnyWith`: 同时开始多个任务，返回第一个完成任务且结果符合要求的结果，若所有结果都不满足，则返回第二个参数为默认值
 
    ```cpp
    using TaskType = HypTask<double(int)>;
@@ -132,7 +132,7 @@
    This block finished and use 215 ms
    ```
 
-5. HypOrderWith: 同时开始多个任务，按顺序返回第一个满足要求的结果，若都不满足，返回最后一个任务的结果
+5. `HypOrderWith`: 同时开始多个任务，按顺序返回第一个满足要求的结果，若都不满足，返回最后一个任务的结果
 
    ```cpp
    using TaskType = HypTask<double(int)>;
