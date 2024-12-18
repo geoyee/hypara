@@ -2,10 +2,10 @@
 
 #include <cmath>
 #include <iostream>
-#include <limits>
 #include <numeric>
-#include <random>
 #include <thread>
+
+using namespace std::chrono_literals;
 
 class Timer final
 {
@@ -28,90 +28,141 @@ private:
     time_point_type m_start;
 };
 
-constexpr double DBL_NaN = std::numeric_limits<double>::quiet_NaN();
+#define TEST_BLOCK_START                                                                                               \
+    {                                                                                                                  \
+        Timer _;
+
+#define TEST_BLOCK_END                                                                                                 \
+    }                                                                                                                  \
+    std::cout << std::endl;
 
 int main()
 {
-    std::random_device rnd;
-    std::mt19937 rGen(rnd());
-    std::cout.precision(8);
+    TEST_BLOCK_START
+    {
+        using TaskType = HypTask<double(int)>;
+        std::vector<TaskType> tasks{TaskType([](int x) -> double { return std::pow(x, 0); }),
+                                    TaskType([](int x) -> double { return std::pow(x, 1); }),
+                                    TaskType([](int x) -> double { return std::pow(x, 2); }),
+                                    TaskType([](int x) -> double { return std::pow(x, 3); })};
+        double res =
+            HypAll(tasks, 5)
+                .then([](const std::vector<double>& res) { return std::accumulate(res.begin(), res.end(), 0.0); })
+                .get();
+        std::cout << "5^0 + 5^1 + 5^2 + 5^3 = " << res << std::endl;
+    }
+    TEST_BLOCK_END
 
-    std::vector<HypTask<double(double)>> tasks{
-        HypTask<double(double)>(
-            [&rGen](double x) -> double
-            {
-                std::uniform_real_distribution<> tDis(0.1, 1);
-                std::uniform_real_distribution<> eDis(-0.01, 0.01);
-                double t = tDis(rGen);
-                double e = eDis(rGen);
-                std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(t * 500)));
-                return x < 10 ? (std::sqrt(x) + e) : DBL_NaN;
-            }),
-        HypTask<double(double)>(
-            [&rGen](double x) -> double
-            {
-                std::uniform_real_distribution<> tDis(1.1, 2);
-                std::uniform_real_distribution<> eDis(-0.00001, 0.00001);
-                double t = tDis(rGen);
-                double e = eDis(rGen);
-                std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(t * 500)));
-                return x < 100 ? (std::sqrt(x) + e) : DBL_NaN;
-            }),
-        HypTask<double(double)>(
-            [&rGen](double x) -> double
-            {
-                std::uniform_real_distribution<> tDis(2.1, 3);
-                std::uniform_real_distribution<> eDis(-0.000000001, 0.000000001);
-                double t = tDis(rGen);
-                double e = eDis(rGen);
-                std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(t * 500)));
-                return x < 1000 ? (std::sqrt(x) + e) : DBL_NaN;
-            }),
-        HypTask<double(double)>(
-            [&rGen](double x) -> double
-            {
-                std::uniform_real_distribution<> tDis(3.1, 4);
-                std::uniform_real_distribution<> eDis(-0.00000000000000001, 0.00000000000000001);
-                double t = tDis(rGen);
-                double e = eDis(rGen);
-                std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(t * 500)));
-                return std::sqrt(x) + e;
-            })};
-    auto best = [](double a, double b) -> bool { return a > b; };
-    auto check = [](double x) -> bool { return (x != DBL_NaN) && (std::abs(x - 4.0) < 1e-8); };
+    TEST_BLOCK_START
+    {
+        using TaskType = HypTask<double(int)>;
+        std::vector<TaskType> tasks{TaskType([](int x) -> double { return std::pow(x, 2) + 0.1; }),
+                                    TaskType([](int x) -> double { return std::pow(x, 2) + 0.01; }),
+                                    TaskType([](int x) -> double { return std::pow(x, 2) + 0.001; }),
+                                    TaskType([](int x) -> double { return std::pow(x, 2) + 0.0001; })};
+        auto comparison = [](const double& a, const double& b) { return a < b; };
+        double res = HypBest(comparison, tasks, 5).get();
+        std::cout << "5^2 = " << res << std::endl;
+    }
+    TEST_BLOCK_END
 
+    TEST_BLOCK_START
     {
-        Timer _;
-        auto res = tasks[0].get(8.0);
-        std::cout << "Task sqrt(8.0) = " << res << std::endl;
+        using TaskType = HypTask<double(int)>;
+        std::vector<TaskType> tasks{TaskType(
+                                        [](int x) -> double
+                                        {
+                                            std::this_thread::sleep_for(200ms);
+                                            return std::pow(x, 2);
+                                        }),
+                                    TaskType(
+                                        [](int x) -> double
+                                        {
+                                            std::this_thread::sleep_for(300ms);
+                                            return std::pow(x, 2);
+                                        }),
+                                    TaskType(
+                                        [](int x) -> double
+                                        {
+                                            std::this_thread::sleep_for(100ms);
+                                            return std::pow(x, 2);
+                                        }),
+                                    TaskType(
+                                        [](int x) -> double
+                                        {
+                                            std::this_thread::sleep_for(400ms);
+                                            return std::pow(x, 2);
+                                        })};
+        std::pair<size_t, double> res = HypAny(tasks, 5).get();
+        std::cout << "Index = " << res.first << ", and res = " << res.second << std::endl;
     }
+    TEST_BLOCK_END
+
+    TEST_BLOCK_START
     {
-        Timer _;
-        auto res = HypAll(tasks, 8.0).get();
-        double ave =
-            static_cast<double>(std::accumulate(res.begin(), res.end(), 0.0) / static_cast<double>(res.size()));
-        std::cout << "HypAll sqrt(8.0) = " << ave << std::endl;
+        using TaskType = HypTask<double(int)>;
+        std::vector<TaskType> tasks{TaskType(
+                                        [](int x) -> double
+                                        {
+                                            std::this_thread::sleep_for(200ms);
+                                            return std::pow(x, 2);
+                                        }),
+                                    TaskType(
+                                        [](int x) -> double
+                                        {
+                                            std::this_thread::sleep_for(300ms);
+                                            return std::pow(x, 2);
+                                        }),
+                                    TaskType(
+                                        [](int x) -> double
+                                        {
+                                            std::this_thread::sleep_for(100ms);
+                                            return -std::pow(x, 2);
+                                        }),
+                                    TaskType(
+                                        [](int x) -> double
+                                        {
+                                            std::this_thread::sleep_for(400ms);
+                                            return std::pow(x, 2);
+                                        })};
+        auto check = [](double x) { return x > 0; };
+        std::pair<int, double> res = HypAnyWith(check, 0, tasks, 5).get();
+        std::cout << "Index = " << res.first << ", and res = " << res.second << std::endl;
     }
+    TEST_BLOCK_END
+
+    TEST_BLOCK_START
     {
-        Timer _;
-        auto res = HypBest(best, tasks, 8.0).get();
-        std::cout << "HypBest sqrt(8.0) = " << res << std::endl;
+        using TaskType = HypTask<double(int)>;
+        std::vector<TaskType> tasks{TaskType(
+                                        [](int x) -> double
+                                        {
+                                            std::this_thread::sleep_for(200ms);
+                                            return -std::pow(x, 2);
+                                        }),
+                                    TaskType(
+                                        [](int x) -> double
+                                        {
+                                            std::this_thread::sleep_for(300ms);
+                                            return std::pow(x, 2);
+                                        }),
+                                    TaskType(
+                                        [](int x) -> double
+                                        {
+                                            std::this_thread::sleep_for(100ms);
+                                            return std::pow(x, 2);
+                                        }),
+                                    TaskType(
+                                        [](int x) -> double
+                                        {
+                                            std::this_thread::sleep_for(400ms);
+                                            return std::pow(x, 2);
+                                        })};
+        auto check = [](const double& x) { return x > 0; };
+        std::pair<size_t, double> res = HypOrderWith(check, tasks, 5).get();
+        std::cout << "Index = " << res.first << ", and res = " << res.second << std::endl;
     }
-    {
-        Timer _;
-        auto res = HypAny(tasks, 8.0).get();
-        std::cout << "HypAny sqrt(8.0) = " << res.second << " and index = " << res.first << std::endl;
-    }
-    {
-        Timer _;
-        auto res = HypAnyWith(check, DBL_NaN, tasks, 16.0).get();
-        std::cout << "HypAnyWith sqrt(16.0) = " << res.second << " and index = " << res.first << std::endl;
-    }
-    {
-        Timer _;
-        auto res = HypOrderWith(check, tasks, 16.0).get();
-        std::cout << "HypOrderWith sqrt(16.0) = " << res.second << " and index = " << res.first << std::endl;
-    }
+    TEST_BLOCK_END
 
     return 0;
 }

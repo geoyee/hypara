@@ -212,8 +212,8 @@ template<typename Func,
          typename Ret,
          typename Range,
          std::enable_if_t<std::is_invocable_r_v<bool, Func, range_trait_t<typename Range::value_type>>, bool> = true,
-         std::enable_if_t<std::is_same_v<typename std::decay_t<Ret>, range_trait_t<typename Range::value_type>>, bool> =
-             true>
+         std::enable_if_t<std::is_convertible_v<typename std::decay_t<Ret>, range_trait_t<typename Range::value_type>>,
+                          bool> = true>
 auto getAnyWithResultPair(Func& checkFun,
                           Ret& defVal,
                           Range& funcs) -> std::pair<int, range_trait_t<typename Range::value_type>>
@@ -336,8 +336,8 @@ template<typename Func,
          typename... Args,
          std::enable_if_t<std::is_invocable_r_v<bool,
                                                 Func,
-                                                typename Range::value_type::return_type,
-                                                typename Range::value_type::return_type>,
+                                                std::remove_cv_t<typename Range::value_type::return_type>,
+                                                std::remove_cv_t<typename Range::value_type::return_type>>,
                           bool> = true>
 inline static auto Best(Func&& fn, Range& range, Args&&...args) -> Task<typename Range::value_type::return_type()>
 {
