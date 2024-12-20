@@ -7,7 +7,7 @@
 
 ## 使用
 
-仅头文件，将[hypara.hpp](./hypara.hpp)拷贝到目标项目即可。运行示例[main.cpp](./main.cpp)可以使用 CMake 直接构建此项目。
+仅头文件，将[hypara.hpp](./hypara.hpp)拷贝到目标项目，或添加为子模块，链接`hypara`即可。运行示例[main.cpp](./sample/main.cpp)可以使用 CMake 直接构建此项目。
 
 ## 示例
 
