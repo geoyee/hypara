@@ -3,13 +3,13 @@
 #ifndef _HYPARA_HPP_
 #define _HYPARA_HPP_
 
-#pragma warning(disable : 4239)
-#pragma warning(disable : 4996)
-
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <functional>
 #include <future>
+#include <memory>
+#include <mutex>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -25,8 +25,8 @@ class Task;
 /**
  * \brief A class representing a task that can be executed with specified arguments.
  *
- * \param Ret The return type of the task.
- * \param Args The argument types that the task accepts.
+ * \tparam Ret The return type of the task.
+ * \tparam Args The argument types that the task accepts.
  */
 template<typename Ret, typename... Args>
 class Task<Ret(Args...)>
@@ -37,21 +37,13 @@ public:
     /**
      * \brief Constructs a Task with a callable.
      *
+     * \tparam Fn The type of the callable object.
      * \param fn A callable object that takes Args... and returns Ret.
      */
-    Task(std::function<Ret(Args...)>&& fn) : m_fn(std::move(fn)) { }
-
-    /**
-     * \brief Constructs a Task with a callable.
-     *
-     * \param fn A callable object that takes Args... and returns Ret.
-     */
-    Task(std::function<const Ret(Args...)>& fn) : m_fn(fn) { }
-
-    /**
-     * \brief Destroys the Task object.
-     */
-    ~Task() = default;
+    template<typename Fn, typename = std::enable_if_t<!std::is_same_v<std::decay_t<Fn>, Task>>>
+    explicit Task(Fn&& fn) : m_fn(std::forward<Fn>(fn))
+    {
+    }
 
     /**
      * \brief Runs the task with the given arguments.
@@ -59,20 +51,19 @@ public:
      * \param args The arguments to pass to the task.
      * \return A shared future that resolves to the result of the task.
      */
-    std::shared_future<Ret> run(Args&&...args)
+    std::shared_future<Ret> run(Args... args) const
     {
-        return std::async(m_fn, std::forward<Args>(args)...);
+        return std::async(std::launch::async, m_fn, std::forward<Args>(args)...).share();
     }
 
     /**
      * \brief Runs the task with the given arguments and waits for it to finish.
      *
      * \param args The arguments to pass to the task.
-     * \return void
      */
-    void wait(Args&&...args)
+    void wait(Args... args) const
     {
-        std::async(m_fn, std::forward<Args>(args)...).wait();
+        run(std::forward<Args>(args)...).wait();
     }
 
     /**
@@ -81,54 +72,52 @@ public:
      * \param args The arguments to pass to the task.
      * \return The result of the task.
      */
-    Ret get(Args&&...args)
+    Ret get(Args... args) const
     {
-        return std::async(m_fn, std::forward<Args>(args)...).get();
+        return run(std::forward<Args>(args)...).get();
     }
 
     /**
      * \brief Creates a new Task that runs the given function after this Task is finished.
      *
+     * \tparam Func The type of the continuation function.
      * \param fn A callable object that takes the result of this Task and returns a new result.
      * \return A new Task that runs `fn` after this Task is finished.
      */
     template<typename Func>
-    auto then(Func&& fn) -> Task<typename std::invoke_result_t<Func, Ret>(Args...)>
+    auto then(Func&& fn) const -> Task<typename std::invoke_result_t<Func, Ret>(Args...)>
     {
         using result_type = typename std::invoke_result_t<Func, Ret>;
 
-        auto func = std::move(m_fn);
-        auto task = Task<result_type(Args...)>(
-            [func, &fn](Args... args)
+        return Task<result_type(Args...)>(
+            [func = m_fn, fn = std::forward<Func>(fn)](Args... args) mutable
             {
-                std::future<Ret> lastFunc = std::async(func, std::forward<Args>(args)...);
-                return std::async(fn, lastFunc.get()).get();
+                auto fut = std::async(std::launch::async, func, std::forward<Args>(args)...);
+                return fn(fut.get());
             });
-
-        return task;
     }
 
 private:
-    std::function<Ret(Args...)> m_fn; /// The function to run.
+    std::function<Ret(Args...)> m_fn; ///< The function to run.
 };
 
 namespace aux
 {
 /**
- * \brief A trait to extract the type from a template parameter.
+ * \brief A trait to extract the underlying type from a type.
  *
- * \param Ret The type to extract.
+ * \tparam T The type to extract.
  */
-template<typename Ret>
+template<typename T>
 struct range_trait
 {
-    using type = Ret;
+    using type = T;
 };
 
 /**
  * \brief A trait to extract the underlying type from a shared_future.
  *
- * \param Ret The result type of the shared_future.
+ * \tparam Ret The result type of the shared_future.
  */
 template<typename Ret>
 struct range_trait<std::shared_future<Ret>>
@@ -137,13 +126,12 @@ struct range_trait<std::shared_future<Ret>>
 };
 
 /**
- * \brief An alias template for accessing the type extracted by the range_trait
- *        struct.
+ * \brief An alias template for accessing the type extracted by the range_trait.
  *
- * \param Ret The type to extract the underlying type from.
+ * \tparam T The type to extract the underlying type from.
  */
-template<typename Ret>
-using range_trait_t = typename range_trait<Ret>::type;
+template<typename T>
+using range_trait_t = typename range_trait<T>::type;
 
 /**
  * \brief Transform a range of tasks into a vector of futures.
@@ -153,15 +141,17 @@ using range_trait_t = typename range_trait<Ret>::type;
  * \return A vector of futures of the tasks.
  */
 template<typename Range, typename... Args>
-auto transform(Range& range,
-               std::tuple<Args...> tArgs) -> std::vector<std::shared_future<typename Range::value_type::return_type>>
+auto transform(const Range& range, const std::tuple<Args...>& tArgs)
+    -> std::vector<std::shared_future<typename Range::value_type::return_type>>
 {
     using result_type = typename Range::value_type::return_type;
 
     std::vector<std::shared_future<result_type>> funcs;
-    for (auto& task : range)
+    funcs.reserve(range.size());
+
+    for (const auto& task : range)
     {
-        funcs.emplace_back(std::apply([&task](auto&&...args) { return task.run(std::forward<Args>(args)...); }, tArgs));
+        funcs.emplace_back(std::apply([&task](const auto&...args) { return task.run(args...); }, tArgs));
     }
     return funcs;
 }
@@ -173,28 +163,69 @@ auto transform(Range& range,
  * \return A pair of the index and result of the first task that is ready.
  */
 template<typename Range>
-auto getAnyResultPair(Range& funcs) -> std::pair<size_t, range_trait_t<typename Range::value_type>>
+auto getAnyResultPair(Range&& funcs) -> std::pair<size_t, range_trait_t<typename Range::value_type>>
 {
-    using result_type = typename std::pair<size_t, range_trait_t<typename Range::value_type>>;
+    using result_type = range_trait_t<typename Range::value_type>;
+    using result_pair = std::pair<size_t, result_type>;
 
-    std::promise<result_type> resPro;
+    std::promise<result_pair> resPro;
     auto resfut = resPro.get_future();
+    auto sharedData = std::make_shared<std::atomic<bool>>(false);
+    const size_t count = funcs.size();
+    std::vector<bool> isFinished(count, false);
+
     std::thread monitor(
-        [funcs = std::move(funcs), &resPro]() mutable
+        [funcs = std::forward<Range>(funcs),
+         resPro = std::move(resPro),
+         sharedData,
+         isFinished = std::move(isFinished),
+         count]() mutable
         {
-            size_t count = funcs.size();
-            while (true)
+            size_t completed = 0;
+            while (completed < count)
             {
                 for (size_t i = 0; i < count; ++i)
                 {
+                    if (isFinished[i])
+                    {
+                        continue;
+                    }
                     if (funcs[i].wait_for(std::chrono::milliseconds(1)) == std::future_status::ready)
                     {
-                        resPro.set_value(std::make_pair(i, funcs[i].get()));
-                        return;
+                        try
+                        {
+                            auto res = funcs[i].get();
+                            isFinished[i] = true;
+                            ++completed;
+                            if (!sharedData->exchange(true))
+                            {
+                                resPro.set_value(std::make_pair(i, std::move(res)));
+                                return;
+                            }
+                        }
+                        catch (...)
+                        {
+                            isFinished[i] = true;
+                            ++completed;
+                        }
                     }
                 }
             }
+
+            // If all tasks failed, set an exception
+            if (!sharedData->exchange(true))
+            {
+                try
+                {
+                    throw std::runtime_error("All tasks failed or no task returned a valid result");
+                }
+                catch (...)
+                {
+                    resPro.set_exception(std::current_exception());
+                }
+            }
         });
+
     monitor.detach();
     return resfut.get();
 }
@@ -202,9 +233,12 @@ auto getAnyResultPair(Range& funcs) -> std::pair<size_t, range_trait_t<typename 
 /**
  * \brief Get the first result of a task in the range that matches the condition.
  *
+ * \tparam Func The type of the condition function.
+ * \tparam Ret The type of the default value.
+ * \tparam Range The type of the range of tasks.
  * \param checkFun The condition function.
  * \param defVal The default value.
- * \param range The range of tasks.
+ * \param funcs The range of tasks.
  * \return A pair of the index and result of the first task that matches the condition.
  *         If no task matches the condition, returns a pair of -1 and the default value.
  */
@@ -212,219 +246,292 @@ template<typename Func,
          typename Ret,
          typename Range,
          std::enable_if_t<std::is_invocable_r_v<bool, Func, range_trait_t<typename Range::value_type>>, bool> = true,
-         std::enable_if_t<std::is_convertible_v<typename std::decay_t<Ret>, range_trait_t<typename Range::value_type>>,
-                          bool> = true>
-auto getAnyWithResultPair(Func& checkFun,
-                          Ret& defVal,
-                          Range& funcs) -> std::pair<int, range_trait_t<typename Range::value_type>>
+         std::enable_if_t<std::is_convertible_v<Ret, range_trait_t<typename Range::value_type>>, bool> = true>
+auto getAnyWithResultPair(Func checkFun, Ret defVal, Range&& funcs)
+    -> std::pair<int, range_trait_t<typename Range::value_type>>
 {
-    using result_type = typename std::pair<int, range_trait_t<typename Range::value_type>>;
+    using result_type = range_trait_t<typename Range::value_type>;
+    using result_pair = std::pair<int, result_type>;
 
-    std::promise<result_type> resPro;
+    std::promise<result_pair> resPro;
     auto resfut = resPro.get_future();
+    auto sharedData = std::make_shared<std::atomic<bool>>(false);
+    const size_t count = funcs.size();
+    std::vector<bool> isFinished(count, false);
+
     std::thread monitor(
-        [checkFun = std::move(checkFun), defVal = std::move(defVal), funcs = std::move(funcs), &resPro]() mutable
+        [funcs = std::forward<Range>(funcs),
+         checkFun = std::move(checkFun),
+         defVal = std::move(defVal),
+         resPro = std::move(resPro),
+         sharedData,
+         isFinished = std::move(isFinished),
+         count]() mutable
         {
-            size_t count = funcs.size();
-            std::vector<bool> isFinished(count, false);
-            while (true)
+            size_t completed = 0;
+            while (completed < count)
             {
                 for (size_t i = 0; i < count; ++i)
                 {
+                    if (isFinished[i])
+                    {
+                        continue;
+                    }
                     if (funcs[i].wait_for(std::chrono::milliseconds(1)) == std::future_status::ready)
                     {
-                        auto res = funcs[i].get();
-                        isFinished[i] = true;
-                        if (checkFun(res))
+                        try
                         {
-                            resPro.set_value(std::make_pair(static_cast<int>(i), std::move(res)));
-                            return;
+                            auto res = funcs[i].get();
+                            isFinished[i] = true;
+                            ++completed;
+                            if (checkFun(res))
+                            {
+                                if (!sharedData->exchange(true))
+                                {
+                                    resPro.set_value(std::make_pair(static_cast<int>(i), std::move(res)));
+                                    return;
+                                }
+                            }
                         }
-                        if (std::find(isFinished.cbegin(), isFinished.cend(), false) == isFinished.cend())
+                        catch (...)
                         {
-                            resPro.set_value(std::make_pair(-1, std::move(defVal)));
-                            return;
+                            isFinished[i] = true;
+                            ++completed;
                         }
                     }
                 }
             }
+
+            // All tasks completed but none matched the condition
+            if (!sharedData->exchange(true))
+            {
+                resPro.set_value(std::make_pair(-1, std::move(defVal)));
+            }
         });
+
     monitor.detach();
     return resfut.get();
 }
 
 /**
- * \brief Get the first result of a task in the range that matches the condition by ordered.
+ * \brief Get the first result of a task in the range that matches the condition in order.
  *
+ * \tparam Func The type of the condition function.
+ * \tparam Range The type of the range of tasks.
  * \param checkFun The condition function.
- * \param defVal The default value.
- * \param range The range of tasks.
+ * \param funcs The range of tasks.
  * \return A pair of the index and result of the first task that matches the condition.
- *         If no task matches the condition, returns the last one.
+ *         If no task matches the condition, returns the last result.
  */
 template<typename Func,
          typename Range,
          std::enable_if_t<std::is_invocable_r_v<bool, Func, range_trait_t<typename Range::value_type>>, bool> = true>
-auto getOrderWithResultPair(Func& checkFun,
-                            Range& funcs) -> std::pair<size_t, range_trait_t<typename Range::value_type>>
+auto getOrderWithResultPair(Func&& checkFun, Range&& funcs)
+    -> std::pair<size_t, range_trait_t<typename Range::value_type>>
 {
-    using result_type = typename std::pair<size_t, range_trait_t<typename Range::value_type>>;
+    using result_type = range_trait_t<typename Range::value_type>;
+    using result_pair = std::pair<size_t, result_type>;
 
-    std::promise<result_type> resPro;
+    std::promise<result_pair> resPro;
     auto resfut = resPro.get_future();
+    auto sharedData = std::make_shared<std::atomic<bool>>(false);
+
     std::thread monitor(
-        [checkFun = std::move(checkFun), funcs = std::move(funcs), &resPro]() mutable
+        [funcs = std::forward<Range>(funcs),
+         checkFun = std::forward<Func>(checkFun),
+         resPro = std::move(resPro),
+         sharedData]() mutable
         {
-            size_t count = funcs.size();
+            const size_t count = funcs.size();
             for (size_t i = 0; i < count; ++i)
             {
-                auto res = funcs[i].get();
-                if (checkFun(res) || (i == count - 1))
+                try
                 {
-                    resPro.set_value(std::make_pair(i, std::move(res)));
-                    return;
+                    auto res = funcs[i].get();
+                    if (checkFun(res) || (i == count - 1))
+                    {
+                        if (!sharedData->exchange(true))
+                        {
+                            resPro.set_value(std::make_pair(i, std::move(res)));
+                            return;
+                        }
+                    }
+                }
+                catch (...)
+                {
+                    if (i == count - 1 && !sharedData->exchange(true))
+                    {
+                        try
+                        {
+                            throw;
+                        }
+                        catch (...)
+                        {
+                            resPro.set_exception(std::current_exception());
+                        }
+                    }
                 }
             }
         });
+
     monitor.detach();
     return resfut.get();
 }
 } // namespace aux
 
 /**
- * \brief A task that returns a vector of results of all tasks in the range.
+ * \brief Creates a task that returns a vector of results of all tasks in the range.
  *
+ * \tparam Range The type of the range of tasks.
+ * \tparam Args The types of the arguments to pass to the tasks.
  * \param range The range of tasks.
  * \param args The arguments to pass to the tasks.
  * \return A task that returns a vector of results of all tasks in the range.
  */
 template<typename Range, typename... Args>
-inline static auto All(Range& range, Args&&...args) -> Task<std::vector<typename Range::value_type::return_type>()>
+inline auto All(const Range& range, Args&&...args) -> Task<std::vector<typename Range::value_type::return_type>()>
 {
     using result_type = typename Range::value_type::return_type;
+    using vector_type = std::vector<result_type>;
 
-    auto resFn = [&range, tArgs = std::tuple<Args...>(std::forward<Args>(args)...)]() mutable
-    {
-        std::vector<std::shared_future<result_type>> funcs;
-        for (auto& task : range)
+    auto tArgs = std::make_tuple(std::forward<Args>(args)...);
+    return Task<vector_type()>(
+        [range, tArgs = std::move(tArgs)]() mutable
         {
-            funcs.emplace_back(
-                std::apply([&task](auto&&...args) { return task.run(std::forward<Args>(args)...); }, std::move(tArgs)));
-        }
-        size_t count = funcs.size();
-        std::vector<result_type> res(count);
-        for (size_t i = 0; i < count; ++i)
-        {
-            res[i] = funcs[i].get();
-        }
-        return res;
-    };
+            std::vector<std::shared_future<result_type>> funcs;
+            funcs.reserve(range.size());
+            for (const auto& task : range)
+            {
+                funcs.emplace_back(std::apply(
+                    [&task](auto&&...args) { return task.run(std::forward<decltype(args)>(args)...); }, tArgs));
+            }
 
-    return static_cast<std::function<std::vector<result_type>()>>(resFn);
+            vector_type res;
+            res.reserve(funcs.size());
+            for (auto& fut : funcs)
+            {
+                res.emplace_back(fut.get());
+            }
+            return res;
+        });
 }
 
 /**
- * \brief A task that returns a best result of all tasks in the range.
+ * \brief Creates a task that returns the best result from all tasks in the range.
  *
- * \param fn The comparison function of result.
+ * \tparam Func The type of the comparison function.
+ * \tparam Range The type of the range of tasks.
+ * \tparam Args The types of the arguments to pass to the tasks.
+ * \param fn The comparison function for results.
  * \param range The range of tasks.
  * \param args The arguments to pass to the tasks.
- * \return A task that the best result of results of all tasks in the range.
+ * \return A task that returns the best result from all tasks in the range.
  */
 template<typename Func,
          typename Range,
          typename... Args,
          std::enable_if_t<std::is_invocable_r_v<bool,
                                                 Func,
-                                                std::remove_cv_t<typename Range::value_type::return_type>,
-                                                std::remove_cv_t<typename Range::value_type::return_type>>,
+                                                typename Range::value_type::return_type,
+                                                typename Range::value_type::return_type>,
                           bool> = true>
-inline static auto Best(Func&& fn, Range& range, Args&&...args) -> Task<typename Range::value_type::return_type()>
+inline auto Best(Func fn, const Range& range, Args&&...args) -> Task<typename Range::value_type::return_type()>
 {
     using result_type = typename Range::value_type::return_type;
     using vector_type = std::vector<result_type>;
 
     return All(range, std::forward<Args>(args)...)
         .then(
-            [&fn](vector_type tmpRes)
+            [fn = std::move(fn)](vector_type tmpRes)
             {
-                std::sort(tmpRes.begin(),
-                          tmpRes.end(),
-                          [&fn](const result_type& a, const result_type& b) { return fn(a, b); });
-                return tmpRes[0];
+                if (tmpRes.empty())
+                {
+                    throw std::runtime_error("No results to compare");
+                }
+                return *std::min_element(tmpRes.begin(),
+                                         tmpRes.end(),
+                                         [&fn](const result_type& a, const result_type& b) { return fn(a, b); });
             });
 }
 
 /**
- * \brief A task that returns the first result that is ready.
+ * \brief Creates a task that returns the first result that is ready.
  *
+ * \tparam Range The type of the range of tasks.
+ * \tparam Args The types of the arguments to pass to the tasks.
  * \param range The range of tasks.
  * \param args The arguments to pass to the tasks.
- * \return A task that returns the first result that is ready.
+ * \return A task that returns a pair of index and result of the first task that is ready.
  */
 template<typename Range, typename... Args>
-inline static auto Any(Range& range,
-                       Args&&...args) -> Task<std::pair<size_t, typename Range::value_type::return_type>()>
+inline auto Any(const Range& range, Args&&...args) -> Task<std::pair<size_t, typename Range::value_type::return_type>()>
 {
     using result_type = typename Range::value_type::return_type;
+    using pair_type = std::pair<size_t, result_type>;
 
-    auto resFn = [&range, tArgs = std::tuple<Args...>(std::forward<Args>(args)...)]() mutable
-    {
-        auto transforms = aux::transform(range, tArgs);
-        return aux::getAnyResultPair(transforms);
-    };
-
-    return static_cast<std::function<std::pair<size_t, result_type>()>>(resFn);
+    return Task<pair_type()>(
+        [range, tArgs = std::make_tuple(std::forward<Args>(args)...)]() mutable
+        {
+            auto funcs = aux::transform(range, tArgs);
+            return aux::getAnyResultPair(std::move(funcs));
+        });
 }
 
 /**
- * \brief A task that returns the first result that matches the condition.
+ * \brief Creates a task that returns the first result that matches the condition.
  *
+ * \tparam Func The type of the condition function.
+ * \tparam Ret The type of the default value.
+ * \tparam Range The type of the range of tasks.
+ * \tparam Args The types of the arguments to pass to the tasks.
  * \param fn The condition function.
  * \param def The default value.
  * \param range The range of tasks.
  * \param args The arguments to pass to the tasks.
- * \return A task that returns the first result that matches the condition.
+ * \return A task that returns a pair of index and result of the first task that matches the condition.
  */
 template<typename Func, typename Ret, typename Range, typename... Args>
-inline static auto AnyWith(Func&& fn, Ret&& def, Range& range, Args&&...args)
+inline auto AnyWith(Func fn, Ret def, const Range& range, Args&&...args)
     -> Task<std::pair<int, typename Range::value_type::return_type>()>
 {
     using result_type = typename Range::value_type::return_type;
+    using pair_type = std::pair<int, result_type>;
 
-    auto resFn =
-        [&fn, &range, tDef = std::forward<Ret>(def), tArgs = std::tuple<Args...>(std::forward<Args>(args)...)]()
-    {
-        auto transforms = aux::transform(range, tArgs);
-        return aux::getAnyWithResultPair(fn, tDef, transforms);
-    };
-
-    return static_cast<std::function<std::pair<int, result_type>()>>(resFn);
+    return Task<pair_type()>(
+        [range,
+         fn = std::move(fn),
+         def = std::move(def),
+         tArgs = std::make_tuple(std::forward<Args>(args)...)]() mutable
+        {
+            auto funcs = aux::transform(range, tArgs);
+            return aux::getAnyWithResultPair(std::move(fn), std::move(def), std::move(funcs));
+        });
 }
 
 /**
- * \brief A task that returns the first result that matches the condition by ordered.
+ * \brief Creates a task that returns the first result that matches the condition in order.
  *
+ * \tparam Func The type of the condition function.
+ * \tparam Range The type of the range of tasks.
+ * \tparam Args The types of the arguments to pass to the tasks.
  * \param fn The condition function.
- * \param def The default value.
  * \param range The range of tasks.
  * \param args The arguments to pass to the tasks.
- * \return A task that returns the first result that matches the condition, if no result matched, return the last one.
+ * \return A task that returns a pair of index and result of the first task that matches the condition.
  */
 template<typename Func, typename Range, typename... Args>
-inline static auto OrderWith(Func&& fn,
-                             Range& range,
-                             Args&&...args) -> Task<std::pair<size_t, typename Range::value_type::return_type>()>
+inline auto OrderWith(Func fn, const Range& range, Args&&...args)
+    -> Task<std::pair<size_t, typename Range::value_type::return_type>()>
 {
     using result_type = typename Range::value_type::return_type;
+    using pair_type = std::pair<size_t, result_type>;
 
-    auto resFn = [&fn, &range, tArgs = std::tuple<Args...>(std::forward<Args>(args)...)]()
-    {
-        auto transforms = aux::transform(range, tArgs);
-        return aux::getOrderWithResultPair(fn, transforms);
-    };
-
-    return static_cast<std::function<std::pair<size_t, result_type>()>>(resFn);
+    return Task<pair_type()>(
+        [range, fn = std::move(fn), tArgs = std::make_tuple(std::forward<Args>(args)...)]() mutable
+        {
+            auto funcs = aux::transform(range, tArgs);
+            return aux::getOrderWithResultPair(std::move(fn), std::move(funcs));
+        });
 }
 } // namespace hyp
 
