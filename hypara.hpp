@@ -12,10 +12,12 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
+#include <condition_variable>
 
 namespace hyp
 {
@@ -122,28 +124,28 @@ public:
     /**
      * \brief Adds a function to the task group.
      *
-     * \tparam Fn The type of the callable.
+     * \param name The name of the task.
      * \param fn The callable to add.
      */
     template<typename Fn>
-    void add_function(Fn&& fn)
+    void add_function(const std::string& name, Fn&& fn)
     {
-        tasks_.emplace_back(std::forward<Fn>(fn));
+        tasks_.emplace_back(name, TaskType(std::forward<Fn>(fn)));
     }
 
     /**
      * \brief Adds a member function to the task group.
      *
-     * \tparam MemFn The member function type.
-     * \tparam Obj The object type.
+     * \param name The name of the task.
      * \param mem_fn The member function.
      * \param obj The object on which to invoke the member function.
      */
     template<typename MemFn, typename Obj>
-    void add_function(MemFn mem_fn, Obj&& obj)
+    void add_function(const std::string& name, MemFn mem_fn, Obj&& obj)
     {
-        tasks_.emplace_back([mem_fn, obj = std::forward<Obj>(obj)](Args... args) -> Ret
-                            { return (obj->*mem_fn)(std::forward<Args>(args)...); });
+        tasks_.emplace_back(name,
+                            TaskType([mem_fn, obj = std::forward<Obj>(obj)](Args... args) -> Ret
+                                     { return (obj->*mem_fn)(std::forward<Args>(args)...); }));
     }
 
     /**
@@ -151,9 +153,10 @@ public:
      *
      * \param args The arguments to pass to the tasks.
      * \param timeout Maximum duration to wait for a result.
-     * \return The first result that is ready, or std::nullopt if timeout.
+     * \return A pair containing the task name and result, or std::nullopt if timeout.
      */
-    std::optional<Ret> execute_any(Args... args, std::chrono::steady_clock::duration timeout = std::chrono::seconds(0))
+    std::optional<std::pair<std::string, Ret>> execute_any(
+        Args... args, std::chrono::steady_clock::duration timeout = std::chrono::seconds(0))
     {
         if (tasks_.empty())
         {
@@ -163,36 +166,63 @@ public:
         std::vector<FutureType> futures;
         futures.reserve(tasks_.size());
 
-        for (auto& task : tasks_)
+        for (auto& [name, task] : tasks_)
         {
-            futures.emplace_back(task.run(args...));
+            futures.push_back(task.run(args...));
         }
 
-        auto start = std::chrono::steady_clock::now();
-        while (true)
+        // 使用when_any替代轮询
+        std::promise<std::optional<size_t>> result_promise;
+        auto result_future = result_promise.get_future();
+
+        std::thread(
+            [&]
+            {
+                std::vector<std::shared_future<void>> wait_futures;
+                for (auto& fut : futures)
+                {
+                    wait_futures.push_back(std::async(std::launch::async, [&fut] { fut.wait(); }));
+                }
+
+                while (true)
+                {
+                    for (size_t i = 0; i < futures.size(); i++)
+                    {
+                        if (futures[i].wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+                        {
+                            result_promise.set_value(i);
+                            return;
+                        }
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                }
+            })
+            .detach();
+
+        // 等待结果或超时
+        if (timeout.count() > 0)
         {
-            auto now = std::chrono::steady_clock::now();
-            if (timeout != std::chrono::seconds(0) && (now - start) > timeout)
+            if (result_future.wait_for(timeout) == std::future_status::timeout)
             {
                 return std::nullopt;
             }
+        }
+        else
+        {
+            result_future.wait();
+        }
 
-            for (size_t i = 0; i < futures.size(); ++i)
+        if (result_future.valid() && result_future.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+        {
+            auto index = result_future.get();
+            if (index)
             {
-                auto status = futures[i].wait_for(std::chrono::milliseconds(1));
-                if (status == std::future_status::ready)
-                {
-                    try
-                    {
-                        return futures[i].get();
-                    }
-                    catch (...)
-                    {
-                        // Skip failed tasks
-                    }
-                }
+                auto& [name, _] = tasks_[*index];
+                return std::make_pair(name, futures[*index].get());
             }
         }
+
+        return std::nullopt;
     }
 
     /**
@@ -201,11 +231,10 @@ public:
      * \param condition The condition function.
      * \param args The arguments to pass to the tasks.
      * \param timeout Maximum duration to wait for a result.
-     * \return The first result that matches the condition, or std::nullopt if none match or timeout.
+     * \return A pair containing the task name and result, or std::nullopt if none match or timeout.
      */
-    std::optional<Ret> execute_any_with(ConditionType condition,
-                                        Args... args,
-                                        std::chrono::steady_clock::duration timeout = std::chrono::seconds(0))
+    std::optional<std::pair<std::string, Ret>> execute_any_with(
+        ConditionType condition, Args... args, std::chrono::steady_clock::duration timeout = std::chrono::seconds(0))
     {
         if (tasks_.empty())
         {
@@ -215,51 +244,67 @@ public:
         std::vector<FutureType> futures;
         futures.reserve(tasks_.size());
 
-        for (auto& task : tasks_)
+        for (auto& [name, task] : tasks_)
         {
-            futures.emplace_back(task.run(args...));
+            futures.push_back(task.run(args...));
         }
 
-        std::vector<bool> completed(tasks_.size(), false);
-        size_t count = tasks_.size();
+        // 使用条件变量高效等待
+        std::mutex mutex;
+        std::condition_variable cv;
+        std::optional<size_t> result_index;
+        bool completed = false;
 
-        auto start = std::chrono::steady_clock::now();
-        while (count > 0)
-        {
-            auto now = std::chrono::steady_clock::now();
-            if (timeout != std::chrono::seconds(0) && (now - start) > timeout)
+        // 创建监控线程
+        std::thread monitor(
+            [&]
             {
-                return std::nullopt;
-            }
-
-            for (size_t i = 0; i < futures.size(); ++i)
-            {
-                if (completed[i])
-                {
-                    continue;
-                }
-
-                auto status = futures[i].wait_for(std::chrono::milliseconds(1));
-                if (status == std::future_status::ready)
+                for (size_t i = 0; i < futures.size(); i++)
                 {
                     try
                     {
                         auto result = futures[i].get();
-                        completed[i] = true;
-                        count--;
-
                         if (condition(result))
                         {
-                            return result;
+                            std::lock_guard lock(mutex);
+                            result_index = i;
+                            completed = true;
+                            cv.notify_one();
+                            return;
                         }
                     }
                     catch (...)
                     {
-                        completed[i] = true;
-                        count--;
+                        // 忽略失败的任务
                     }
                 }
+            });
+
+        // 等待结果或超时
+        std::unique_lock lock(mutex);
+        if (timeout.count() > 0)
+        {
+            if (!cv.wait_for(lock, timeout, [&] { return completed; }))
+            {
+                completed = true; // 通知监控线程退出
+                monitor.detach();
+                return std::nullopt;
             }
+        }
+        else
+        {
+            cv.wait(lock, [&] { return completed; });
+        }
+
+        if (monitor.joinable())
+        {
+            monitor.join();
+        }
+
+        if (result_index)
+        {
+            auto& [name, _] = tasks_[*result_index];
+            return std::make_pair(name, futures[*result_index].get());
         }
 
         return std::nullopt;
@@ -270,52 +315,51 @@ public:
      *
      * \param args The arguments to pass to the tasks.
      * \param timeout Maximum duration to wait for all results.
-     * \return A vector of all completed results (may be partial if timeout).
+     * \return A vector of all completed results with task names (may be partial if timeout).
      */
-    std::vector<Ret> execute_all(Args... args, std::chrono::steady_clock::duration timeout = std::chrono::seconds(0))
+    std::vector<std::pair<std::string, Ret>> execute_all(
+        Args... args, std::chrono::steady_clock::duration timeout = std::chrono::seconds(0))
     {
+        std::vector<std::pair<std::string, Ret>> results;
+        if (tasks_.empty())
+        {
+            return results;
+        }
+
         std::vector<FutureType> futures;
         futures.reserve(tasks_.size());
 
-        for (auto& task : tasks_)
+        // 启动所有任务
+        for (auto& [name, task] : tasks_)
         {
-            futures.emplace_back(task.run(args...));
+            futures.push_back(task.run(args...));
         }
 
-        std::vector<Ret> results;
-        results.reserve(futures.size());
+        // 计算截止时间
+        auto deadline = std::chrono::steady_clock::now() + timeout;
 
-        auto start = std::chrono::steady_clock::now();
-        for (size_t i = 0; i < futures.size(); ++i)
+        for (size_t i = 0; i < tasks_.size(); i++)
         {
-            auto now = std::chrono::steady_clock::now();
-            if (timeout != std::chrono::seconds(0) && (now - start) > timeout)
+            auto& [name, _] = tasks_[i];
+
+            // 检查超时
+            if (timeout.count() > 0 && std::chrono::steady_clock::now() >= deadline)
             {
-                break; // Return partial results
+                break;
             }
 
             try
             {
-                if (timeout == std::chrono::seconds(0))
+                // 使用非阻塞检查
+                auto status = futures[i].wait_for(std::chrono::seconds(0));
+                if (status == std::future_status::ready)
                 {
-                    results.emplace_back(futures[i].get());
-                }
-                else
-                {
-                    auto remaining = timeout - (now - start);
-                    if (futures[i].wait_for(remaining) == std::future_status::ready)
-                    {
-                        results.emplace_back(futures[i].get());
-                    }
-                    else
-                    {
-                        break; // Timeout, return partial results
-                    }
+                    results.emplace_back(name, futures[i].get());
                 }
             }
             catch (...)
             {
-                // Skip failed tasks
+                // 忽略失败的任务
             }
         }
 
@@ -328,11 +372,10 @@ public:
      * \param comparator The comparator function.
      * \param args The arguments to pass to the tasks.
      * \param timeout Maximum duration to wait for results.
-     * \return The best result according to the comparator, or std::nullopt if no results.
+     * \return A pair containing the task name and best result, or std::nullopt if no results.
      */
-    std::optional<Ret> execute_best(ComparatorType comparator,
-                                    Args... args,
-                                    std::chrono::steady_clock::duration timeout = std::chrono::seconds(0))
+    std::optional<std::pair<std::string, Ret>> execute_best(
+        ComparatorType comparator, Args... args, std::chrono::steady_clock::duration timeout = std::chrono::seconds(0))
     {
         auto results = execute_all(std::forward<Args>(args)..., timeout);
 
@@ -344,7 +387,7 @@ public:
         auto best = results[0];
         for (size_t i = 1; i < results.size(); ++i)
         {
-            if (comparator(results[i], best))
+            if (comparator(results[i].second, best.second))
             {
                 best = results[i];
             }
@@ -359,11 +402,10 @@ public:
      * \param condition The condition function.
      * \param args The arguments to pass to the tasks.
      * \param timeout Maximum duration to wait for a result.
-     * \return The first result that matches the condition in order, or std::nullopt if none match or timeout.
+     * \return A pair containing the task name and result, or std::nullopt if none match or timeout.
      */
-    std::optional<Ret> execute_order_with(ConditionType condition,
-                                          Args... args,
-                                          std::chrono::steady_clock::duration timeout = std::chrono::seconds(0))
+    std::optional<std::pair<std::string, Ret>> execute_order_with(
+        ConditionType condition, Args... args, std::chrono::steady_clock::duration timeout = std::chrono::seconds(0))
     {
         if (tasks_.empty())
         {
@@ -371,49 +413,44 @@ public:
         }
 
         auto start = std::chrono::steady_clock::now();
-        for (auto& task : tasks_)
+        for (auto& [name, task] : tasks_)
         {
-            auto now = std::chrono::steady_clock::now();
-            if (timeout != std::chrono::seconds(0) && (now - start) > timeout)
+            // 检查超时
+            if (timeout.count() > 0)
             {
-                return std::nullopt;
+                auto now = std::chrono::steady_clock::now();
+                if (now - start >= timeout)
+                {
+                    return std::nullopt;
+                }
             }
 
             try
             {
                 auto fut = task.run(args...);
-                std::future_status status;
 
-                if (timeout == std::chrono::seconds(0))
+                if (timeout.count() > 0)
                 {
-                    // 无限等待
-                    fut.wait();
-                    status = std::future_status::ready;
-                }
-                else
-                {
-                    // 有限等待
-                    auto remaining = timeout - (now - start);
-                    status = fut.wait_for(remaining);
-                }
-
-                if (status == std::future_status::ready)
-                {
-                    auto result = fut.get();
-                    if (condition(result))
+                    auto remaining = timeout - (std::chrono::steady_clock::now() - start);
+                    if (fut.wait_for(remaining) != std::future_status::ready)
                     {
-                        return result;
+                        return std::nullopt;
                     }
                 }
                 else
                 {
-                    // 超时
-                    return std::nullopt;
+                    fut.wait();
+                }
+
+                auto result = fut.get();
+                if (condition(result))
+                {
+                    return std::make_pair(name, result);
                 }
             }
             catch (...)
             {
-                // Skip failed tasks
+                // 忽略失败的任务
             }
         }
 
@@ -421,7 +458,7 @@ public:
     }
 
 private:
-    std::vector<TaskType> tasks_;
+    std::vector<std::pair<std::string, TaskType>> tasks_;
 };
 
 namespace aux
@@ -493,63 +530,42 @@ auto getAnyResultPair(Range&& funcs) -> std::pair<size_t, range_trait_t<typename
 
     std::promise<result_pair> resPro;
     auto resfut = resPro.get_future();
-    auto sharedData = std::make_shared<std::atomic<bool>>(false);
+    std::atomic<bool> found{false};
     const size_t count = funcs.size();
-    std::vector<bool> isFinished(count, false);
 
-    std::thread monitor(
-        [funcs = std::forward<Range>(funcs),
-         resPro = std::move(resPro),
-         sharedData,
-         isFinished = std::move(isFinished),
-         count]() mutable
+    std::thread(
+        [funcs = std::forward<Range>(funcs), resPro = std::move(resPro), &found, count]() mutable
         {
-            size_t completed = 0;
-            while (completed < count)
-            {
-                for (size_t i = 0; i < count; ++i)
-                {
-                    if (isFinished[i])
-                    {
-                        continue;
-                    }
-                    if (funcs[i].wait_for(std::chrono::milliseconds(1)) == std::future_status::ready)
-                    {
-                        try
-                        {
-                            auto res = funcs[i].get();
-                            isFinished[i] = true;
-                            ++completed;
-                            if (!sharedData->exchange(true))
-                            {
-                                resPro.set_value(std::make_pair(i, std::move(res)));
-                                return;
-                            }
-                        }
-                        catch (...)
-                        {
-                            isFinished[i] = true;
-                            ++completed;
-                        }
-                    }
-                }
-            }
-
-            // If all tasks failed, set an exception
-            if (!sharedData->exchange(true))
+            for (size_t i = 0; i < count; i++)
             {
                 try
                 {
-                    throw std::runtime_error("All tasks failed or no task returned a valid result");
+                    auto status = funcs[i].wait_for(std::chrono::milliseconds(1));
+                    if (status == std::future_status::ready)
+                    {
+                        auto res = funcs[i].get();
+                        if (!found.exchange(true))
+                        {
+                            resPro.set_value(std::make_pair(i, std::move(res)));
+                            return;
+                        }
+                    }
                 }
                 catch (...)
                 {
-                    resPro.set_exception(std::current_exception());
+                    // 忽略失败的任务
                 }
             }
-        });
 
-    monitor.detach();
+            // 如果所有任务都失败
+            if (!found.exchange(true))
+            {
+                resPro.set_exception(
+                    std::make_exception_ptr(std::runtime_error("All tasks failed or no task returned a valid result")));
+            }
+        })
+        .detach();
+
     return resfut.get();
 }
 
@@ -566,68 +582,55 @@ auto getAnyResultPair(Range&& funcs) -> std::pair<size_t, range_trait_t<typename
 template<typename Func,
          typename Range,
          std::enable_if_t<std::is_invocable_r_v<bool, Func, range_trait_t<typename Range::value_type>>, bool> = true>
-auto getAnyWithResultPair(Func checkFun, Range&& funcs)
-    -> std::pair<int, std::optional<range_trait_t<typename Range::value_type>>>
+auto getAnyWithResultPair(Func checkFun,
+                          Range&& funcs) -> std::pair<int, std::optional<range_trait_t<typename Range::value_type>>>
 {
     using result_type = range_trait_t<typename Range::value_type>;
     using result_pair = std::pair<int, std::optional<result_type>>;
 
     std::promise<result_pair> resPro;
     auto resfut = resPro.get_future();
-    auto sharedData = std::make_shared<std::atomic<bool>>(false);
+    std::atomic<bool> found{false};
     const size_t count = funcs.size();
-    std::vector<bool> isFinished(count, false);
 
-    std::thread monitor(
+    std::thread(
         [funcs = std::forward<Range>(funcs),
          checkFun = std::move(checkFun),
          resPro = std::move(resPro),
-         sharedData,
-         isFinished = std::move(isFinished),
-         count]() mutable
+         &found]() mutable
         {
-            size_t completed = 0;
-            while (completed < count)
+            for (size_t i = 0; i < count; i++)
             {
-                for (size_t i = 0; i < count; ++i)
+                try
                 {
-                    if (isFinished[i])
+                    auto status = funcs[i].wait_for(std::chrono::milliseconds(1));
+                    if (status == std::future_status::ready)
                     {
-                        continue;
-                    }
-                    if (funcs[i].wait_for(std::chrono::milliseconds(1)) == std::future_status::ready)
-                    {
-                        try
+                        auto res = funcs[i].get();
+                        if (checkFun(res))
                         {
-                            auto res = funcs[i].get();
-                            isFinished[i] = true;
-                            ++completed;
-                            if (checkFun(res))
+                            if (!found.exchange(true))
                             {
-                                if (!sharedData->exchange(true))
-                                {
-                                    resPro.set_value(std::make_pair(static_cast<int>(i), std::move(res)));
-                                    return;
-                                }
+                                resPro.set_value(std::make_pair(static_cast<int>(i), std::move(res)));
+                                return;
                             }
-                        }
-                        catch (...)
-                        {
-                            isFinished[i] = true;
-                            ++completed;
                         }
                     }
                 }
+                catch (...)
+                {
+                    // 忽略失败的任务
+                }
             }
 
-            // All tasks completed but none matched the condition
-            if (!sharedData->exchange(true))
+            // 所有任务完成但没有匹配条件
+            if (!found.exchange(true))
             {
                 resPro.set_value(std::make_pair(-1, std::nullopt));
             }
-        });
+        })
+        .detach();
 
-    monitor.detach();
     return resfut.get();
 }
 
@@ -652,23 +655,23 @@ auto getOrderWithResultPair(Func&& checkFun, Range&& funcs)
 
     std::promise<result_pair> resPro;
     auto resfut = resPro.get_future();
-    auto sharedData = std::make_shared<std::atomic<bool>>(false);
+    std::atomic<bool> found{false};
+    const size_t count = funcs.size();
 
-    std::thread monitor(
+    std::thread(
         [funcs = std::forward<Range>(funcs),
          checkFun = std::forward<Func>(checkFun),
          resPro = std::move(resPro),
-         sharedData]() mutable
+         &found]() mutable
         {
-            const size_t count = funcs.size();
-            for (size_t i = 0; i < count; ++i)
+            for (size_t i = 0; i < count; i++)
             {
                 try
                 {
                     auto res = funcs[i].get();
                     if (checkFun(res))
                     {
-                        if (!sharedData->exchange(true))
+                        if (!found.exchange(true))
                         {
                             resPro.set_value(std::make_pair(i, std::move(res)));
                             return;
@@ -677,18 +680,18 @@ auto getOrderWithResultPair(Func&& checkFun, Range&& funcs)
                 }
                 catch (...)
                 {
-                    // Skip failed tasks
+                    // 忽略失败的任务
                 }
             }
 
-            // No task matched the condition
-            if (!sharedData->exchange(true))
+            // 没有任务匹配条件
+            if (!found.exchange(true))
             {
                 resPro.set_value(std::make_pair(count, std::nullopt));
             }
-        });
+        })
+        .detach();
 
-    monitor.detach();
     return resfut.get();
 }
 } // namespace aux
@@ -803,8 +806,9 @@ inline auto Any(const Range& range, Args&&...args) -> Task<std::pair<size_t, typ
  * \return A task that returns a pair of index and result of the first task that matches the condition.
  */
 template<typename Func, typename Range, typename... Args>
-inline auto AnyWith(Func fn, const Range& range, Args&&...args)
-    -> Task<std::pair<int, std::optional<typename Range::value_type::return_type>>()>
+inline auto AnyWith(Func fn,
+                    const Range& range,
+                    Args&&...args) -> Task<std::pair<int, std::optional<typename Range::value_type::return_type>>()>
 {
     using result_type = typename Range::value_type::return_type;
     using pair_type = std::pair<int, std::optional<result_type>>;

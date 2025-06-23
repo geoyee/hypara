@@ -1,92 +1,65 @@
 #include <hypara.hpp>
+#include <cmath>
 #include <iostream>
 
-struct A
+struct Calculator
 {
-    double f1(int x)
-    {
-        return std::pow(x, 1);
-    }
-
-    static double f2(int x)
+    double square(int x)
     {
         return std::pow(x, 2);
+    }
+
+    static double cube(int x)
+    {
+        return std::pow(x, 3);
     }
 };
 
 int main()
 {
-    A a;
-
-    // 创建任务组，指定任务签名: double(int)
+    Calculator calc;
     hyp::TaskGroup<double, int> tasks;
 
-    // 添加各种类型的任务
-    tasks.add_function([](int x) -> double { return std::pow(x, 0); });
-    tasks.add_function(&A::f1, &a); // 成员函数
-    tasks.add_function(&A::f2);     // 静态成员函数
+    // 添加任务并命名
+    tasks.add_function("power_zero", [](int x) { return std::pow(x, 0); });
+    tasks.add_function("square", &Calculator::square, &calc);
+    tasks.add_function("cube", &Calculator::cube);
 
-    // 设置超时时间
-    auto timeout = std::chrono::milliseconds(100);
+    // Any 策略 - 获取第一个完成的任务结果
+    if (auto result = tasks.execute_any(5))
+    {
+        auto [name, value] = *result;
+        std::cout << "Any: " << name << " returned " << value << std::endl;
+    }
 
-    // 执行不同策略
-    auto r1 = tasks.execute_any(5, timeout);
-    auto r2 = tasks.execute_any_with([](double res) { return res > 10; }, 5, timeout);
-    auto r3 = tasks.execute_all(5, timeout);
-    auto r4 = tasks.execute_best([](double a, double b) { return a < b; }, 5, timeout);
-    auto r5 = tasks.execute_order_with([](double res) { return res > 10; }, 5, timeout);
+    // AnyWith 策略 - 获取第一个满足条件的结果
+    if (auto result = tasks.execute_any_with([](double v) { return v > 100; }, 5))
+    {
+        auto [name, value] = *result;
+        std::cout << "AnyWith: " << name << " returned " << value << std::endl;
+    }
 
-    // 输出结果
-    std::cout << "Any: ";
-    if (r1)
+    // All 策略 - 获取所有任务结果
+    auto all_results = tasks.execute_all(5);
+    std::cout << "All results:\n";
+    for (auto& [name, value] : all_results)
     {
-        std::cout << *r1;
+        std::cout << "  " << name << ": " << value << std::endl;
     }
-    else
-    {
-        std::cout << "timeout";
-    }
-    std::cout << std::endl;
 
-    std::cout << "AnyWith: ";
-    if (r2)
+    // Best 策略 - 获取最佳结果
+    if (auto result = tasks.execute_best([](double a, double b) { return a < b; }, 5))
     {
-        std::cout << *r2;
+        auto [name, value] = *result;
+        std::cout << "Best: " << name << " returned " << value << std::endl;
     }
-    else
-    {
-        std::cout << "not found";
-    }
-    std::cout << std::endl;
 
-    std::cout << "All: ";
-    for (auto val : r3)
+    // OrderWith 策略 - 按顺序获取满足条件的结果
+    if (auto result = tasks.execute_order_with([](double v) { return v > 10; }, 5))
     {
-        std::cout << val << " ";
+        auto [name, value] = *result;
+        std::cout << "OrderWith: " << name << " returned " << value << std::endl;
     }
-    std::cout << std::endl;
-
-    std::cout << "Best: ";
-    if (r4)
-    {
-        std::cout << *r4;
-    }
-    else
-    {
-        std::cout << "no results";
-    }
-    std::cout << std::endl;
-
-    std::cout << "OrderWith: ";
-    if (r5)
-    {
-        std::cout << *r5;
-    }
-    else
-    {
-        std::cout << "not found";
-    }
-    std::cout << std::endl;
 
     return 0;
 }
