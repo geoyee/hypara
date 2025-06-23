@@ -11,13 +11,14 @@ if (PROJECT_SOURCE_DIR STREQUAL PROJECT_BINARY_DIR)
 endif ()
 
 string(COMPARE EQUAL ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR} IS_MAIN_PROJECT)
-option(HYPARA_ENABLE_SAMPLE "Enable sample." ${IS_MAIN_PROJECT})
+option(HYPARA_ENABLE_SAMPLE "Enable sample of hypara." ${IS_MAIN_PROJECT})
+option(HYPARA_ENABLE_TEST "Enable test of hypara." ${IS_MAIN_PROJECT})
 
 add_library(${PROJECT_NAME} INTERFACE)
 target_include_directories(${PROJECT_NAME} INTERFACE $<BUILD_INTERFACE:${${PROJECT_NAME}_SOURCE_DIR}>
                                                      $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
-if (HYPARA_ENABLE_SAMPLE)
+if (HYPARA_ENABLE_SAMPLE OR HYPARA_ENABLE_TEST)
   set(CMAKE_CXX_STANDARD_REQUIRED ON)
   set(CMAKE_CXX_EXTENSIONS OFF)
   set(LINK_WHAT_YOU_USE ON)
@@ -37,9 +38,24 @@ if (HYPARA_ENABLE_SAMPLE)
     add_link_options($<$<CXX_COMPILER_ID:GNU,Clang>:-flto>)
   endif ()
 
-  set(SAMPLE_NAME ${PROJECT_NAME}-sample)
-  add_executable(${SAMPLE_NAME} sample/main.cpp hypara.hpp)
-  target_link_libraries(${SAMPLE_NAME} ${PROJECT_NAME})
+  if (HYPARA_ENABLE_SAMPLE)
+    set(SAMPLE_NAME ${PROJECT_NAME}-sample)
+    add_executable(${SAMPLE_NAME} sample/main.cpp hypara.hpp)
+    target_link_libraries(${SAMPLE_NAME} ${PROJECT_NAME})
+  endif ()
+
+  if (HYPARA_ENABLE_TEST)
+    Include(FetchContent)
+    FetchContent_Declare(
+      Catch2
+      GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+      GIT_TAG        v3.8.1
+    )
+    FetchContent_MakeAvailable(Catch2)
+    set(TEST_NAME ${PROJECT_NAME}-test)
+    add_executable(${TEST_NAME} test/main.cpp hypara.hpp)
+    target_link_libraries(${TEST_NAME} ${PROJECT_NAME} Catch2::Catch2WithMain)
+  endif ()
 endif ()
 
 install(FILES "hypara.hpp" DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})

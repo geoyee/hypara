@@ -8,8 +8,11 @@
 #include <chrono>
 #include <functional>
 #include <future>
+#include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -33,6 +36,7 @@ class Task<Ret(Args...)>
 {
 public:
     using return_type = Ret;
+    using function_type = std::function<Ret(Args...)>;
 
     /**
      * \brief Constructs a Task with a callable.
@@ -98,7 +102,326 @@ public:
     }
 
 private:
-    std::function<Ret(Args...)> m_fn; ///< The function to run.
+    function_type m_fn; ///< The function to run.
+};
+
+/**
+ * \brief A class for managing a group of tasks with the same signature.
+ */
+template<typename Ret, typename... Args>
+class TaskGroup
+{
+public:
+    using TaskType = Task<Ret(Args...)>;
+    using FunctionType = std::function<Ret(Args...)>;
+    using FutureType = std::shared_future<Ret>;
+    using ResultType = Ret;
+    using ConditionType = std::function<bool(Ret)>;
+    using ComparatorType = std::function<bool(Ret, Ret)>;
+
+    /**
+     * \brief Adds a function to the task group.
+     *
+     * \tparam Fn The type of the callable.
+     * \param fn The callable to add.
+     */
+    template<typename Fn>
+    void add_function(Fn&& fn)
+    {
+        tasks_.emplace_back(std::forward<Fn>(fn));
+    }
+
+    /**
+     * \brief Adds a member function to the task group.
+     *
+     * \tparam MemFn The member function type.
+     * \tparam Obj The object type.
+     * \param mem_fn The member function.
+     * \param obj The object on which to invoke the member function.
+     */
+    template<typename MemFn, typename Obj>
+    void add_function(MemFn mem_fn, Obj&& obj)
+    {
+        tasks_.emplace_back([mem_fn, obj = std::forward<Obj>(obj)](Args... args) -> Ret
+                            { return (obj->*mem_fn)(std::forward<Args>(args)...); });
+    }
+
+    /**
+     * \brief Executes the tasks with the Any strategy.
+     *
+     * \param args The arguments to pass to the tasks.
+     * \param timeout Maximum duration to wait for a result.
+     * \return The first result that is ready, or std::nullopt if timeout.
+     */
+    std::optional<Ret> execute_any(Args... args, std::chrono::steady_clock::duration timeout = std::chrono::seconds(0))
+    {
+        if (tasks_.empty())
+        {
+            return std::nullopt;
+        }
+
+        std::vector<FutureType> futures;
+        futures.reserve(tasks_.size());
+
+        for (auto& task : tasks_)
+        {
+            futures.emplace_back(task.run(args...));
+        }
+
+        auto start = std::chrono::steady_clock::now();
+        while (true)
+        {
+            auto now = std::chrono::steady_clock::now();
+            if (timeout != std::chrono::seconds(0) && (now - start) > timeout)
+            {
+                return std::nullopt;
+            }
+
+            for (size_t i = 0; i < futures.size(); ++i)
+            {
+                auto status = futures[i].wait_for(std::chrono::milliseconds(1));
+                if (status == std::future_status::ready)
+                {
+                    try
+                    {
+                        return futures[i].get();
+                    }
+                    catch (...)
+                    {
+                        // Skip failed tasks
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * \brief Executes the tasks with the AnyWith strategy.
+     *
+     * \param condition The condition function.
+     * \param args The arguments to pass to the tasks.
+     * \param timeout Maximum duration to wait for a result.
+     * \return The first result that matches the condition, or std::nullopt if none match or timeout.
+     */
+    std::optional<Ret> execute_any_with(ConditionType condition,
+                                        Args... args,
+                                        std::chrono::steady_clock::duration timeout = std::chrono::seconds(0))
+    {
+        if (tasks_.empty())
+        {
+            return std::nullopt;
+        }
+
+        std::vector<FutureType> futures;
+        futures.reserve(tasks_.size());
+
+        for (auto& task : tasks_)
+        {
+            futures.emplace_back(task.run(args...));
+        }
+
+        std::vector<bool> completed(tasks_.size(), false);
+        size_t count = tasks_.size();
+
+        auto start = std::chrono::steady_clock::now();
+        while (count > 0)
+        {
+            auto now = std::chrono::steady_clock::now();
+            if (timeout != std::chrono::seconds(0) && (now - start) > timeout)
+            {
+                return std::nullopt;
+            }
+
+            for (size_t i = 0; i < futures.size(); ++i)
+            {
+                if (completed[i])
+                {
+                    continue;
+                }
+
+                auto status = futures[i].wait_for(std::chrono::milliseconds(1));
+                if (status == std::future_status::ready)
+                {
+                    try
+                    {
+                        auto result = futures[i].get();
+                        completed[i] = true;
+                        count--;
+
+                        if (condition(result))
+                        {
+                            return result;
+                        }
+                    }
+                    catch (...)
+                    {
+                        completed[i] = true;
+                        count--;
+                    }
+                }
+            }
+        }
+
+        return std::nullopt;
+    }
+
+    /**
+     * \brief Executes the tasks with the All strategy.
+     *
+     * \param args The arguments to pass to the tasks.
+     * \param timeout Maximum duration to wait for all results.
+     * \return A vector of all completed results (may be partial if timeout).
+     */
+    std::vector<Ret> execute_all(Args... args, std::chrono::steady_clock::duration timeout = std::chrono::seconds(0))
+    {
+        std::vector<FutureType> futures;
+        futures.reserve(tasks_.size());
+
+        for (auto& task : tasks_)
+        {
+            futures.emplace_back(task.run(args...));
+        }
+
+        std::vector<Ret> results;
+        results.reserve(futures.size());
+
+        auto start = std::chrono::steady_clock::now();
+        for (size_t i = 0; i < futures.size(); ++i)
+        {
+            auto now = std::chrono::steady_clock::now();
+            if (timeout != std::chrono::seconds(0) && (now - start) > timeout)
+            {
+                break; // Return partial results
+            }
+
+            try
+            {
+                if (timeout == std::chrono::seconds(0))
+                {
+                    results.emplace_back(futures[i].get());
+                }
+                else
+                {
+                    auto remaining = timeout - (now - start);
+                    if (futures[i].wait_for(remaining) == std::future_status::ready)
+                    {
+                        results.emplace_back(futures[i].get());
+                    }
+                    else
+                    {
+                        break; // Timeout, return partial results
+                    }
+                }
+            }
+            catch (...)
+            {
+                // Skip failed tasks
+            }
+        }
+
+        return results;
+    }
+
+    /**
+     * \brief Executes the tasks with the Best strategy.
+     *
+     * \param comparator The comparator function.
+     * \param args The arguments to pass to the tasks.
+     * \param timeout Maximum duration to wait for results.
+     * \return The best result according to the comparator, or std::nullopt if no results.
+     */
+    std::optional<Ret> execute_best(ComparatorType comparator,
+                                    Args... args,
+                                    std::chrono::steady_clock::duration timeout = std::chrono::seconds(0))
+    {
+        auto results = execute_all(std::forward<Args>(args)..., timeout);
+
+        if (results.empty())
+        {
+            return std::nullopt;
+        }
+
+        auto best = results[0];
+        for (size_t i = 1; i < results.size(); ++i)
+        {
+            if (comparator(results[i], best))
+            {
+                best = results[i];
+            }
+        }
+
+        return best;
+    }
+
+    /**
+     * \brief Executes the tasks with the OrderWith strategy.
+     *
+     * \param condition The condition function.
+     * \param args The arguments to pass to the tasks.
+     * \param timeout Maximum duration to wait for a result.
+     * \return The first result that matches the condition in order, or std::nullopt if none match or timeout.
+     */
+    std::optional<Ret> execute_order_with(ConditionType condition,
+                                          Args... args,
+                                          std::chrono::steady_clock::duration timeout = std::chrono::seconds(0))
+    {
+        if (tasks_.empty())
+        {
+            return std::nullopt;
+        }
+
+        auto start = std::chrono::steady_clock::now();
+        for (auto& task : tasks_)
+        {
+            auto now = std::chrono::steady_clock::now();
+            if (timeout != std::chrono::seconds(0) && (now - start) > timeout)
+            {
+                return std::nullopt;
+            }
+
+            try
+            {
+                auto fut = task.run(args...);
+                std::future_status status;
+
+                if (timeout == std::chrono::seconds(0))
+                {
+                    // 无限等待
+                    fut.wait();
+                    status = std::future_status::ready;
+                }
+                else
+                {
+                    // 有限等待
+                    auto remaining = timeout - (now - start);
+                    status = fut.wait_for(remaining);
+                }
+
+                if (status == std::future_status::ready)
+                {
+                    auto result = fut.get();
+                    if (condition(result))
+                    {
+                        return result;
+                    }
+                }
+                else
+                {
+                    // 超时
+                    return std::nullopt;
+                }
+            }
+            catch (...)
+            {
+                // Skip failed tasks
+            }
+        }
+
+        return std::nullopt;
+    }
+
+private:
+    std::vector<TaskType> tasks_;
 };
 
 namespace aux
@@ -234,24 +557,20 @@ auto getAnyResultPair(Range&& funcs) -> std::pair<size_t, range_trait_t<typename
  * \brief Get the first result of a task in the range that matches the condition.
  *
  * \tparam Func The type of the condition function.
- * \tparam Ret The type of the default value.
  * \tparam Range The type of the range of tasks.
  * \param checkFun The condition function.
- * \param defVal The default value.
  * \param funcs The range of tasks.
  * \return A pair of the index and result of the first task that matches the condition.
- *         If no task matches the condition, returns a pair of -1 and the default value.
+ *         If no task matches the condition, returns a pair of -1 and std::nullopt.
  */
 template<typename Func,
-         typename Ret,
          typename Range,
-         std::enable_if_t<std::is_invocable_r_v<bool, Func, range_trait_t<typename Range::value_type>>, bool> = true,
-         std::enable_if_t<std::is_convertible_v<Ret, range_trait_t<typename Range::value_type>>, bool> = true>
-auto getAnyWithResultPair(Func checkFun, Ret defVal, Range&& funcs)
-    -> std::pair<int, range_trait_t<typename Range::value_type>>
+         std::enable_if_t<std::is_invocable_r_v<bool, Func, range_trait_t<typename Range::value_type>>, bool> = true>
+auto getAnyWithResultPair(Func checkFun, Range&& funcs)
+    -> std::pair<int, std::optional<range_trait_t<typename Range::value_type>>>
 {
     using result_type = range_trait_t<typename Range::value_type>;
-    using result_pair = std::pair<int, result_type>;
+    using result_pair = std::pair<int, std::optional<result_type>>;
 
     std::promise<result_pair> resPro;
     auto resfut = resPro.get_future();
@@ -262,7 +581,6 @@ auto getAnyWithResultPair(Func checkFun, Ret defVal, Range&& funcs)
     std::thread monitor(
         [funcs = std::forward<Range>(funcs),
          checkFun = std::move(checkFun),
-         defVal = std::move(defVal),
          resPro = std::move(resPro),
          sharedData,
          isFinished = std::move(isFinished),
@@ -305,7 +623,7 @@ auto getAnyWithResultPair(Func checkFun, Ret defVal, Range&& funcs)
             // All tasks completed but none matched the condition
             if (!sharedData->exchange(true))
             {
-                resPro.set_value(std::make_pair(-1, std::move(defVal)));
+                resPro.set_value(std::make_pair(-1, std::nullopt));
             }
         });
 
@@ -321,16 +639,16 @@ auto getAnyWithResultPair(Func checkFun, Ret defVal, Range&& funcs)
  * \param checkFun The condition function.
  * \param funcs The range of tasks.
  * \return A pair of the index and result of the first task that matches the condition.
- *         If no task matches the condition, returns the last result.
+ *         If no task matches the condition, returns std::nullopt.
  */
 template<typename Func,
          typename Range,
          std::enable_if_t<std::is_invocable_r_v<bool, Func, range_trait_t<typename Range::value_type>>, bool> = true>
 auto getOrderWithResultPair(Func&& checkFun, Range&& funcs)
-    -> std::pair<size_t, range_trait_t<typename Range::value_type>>
+    -> std::pair<size_t, std::optional<range_trait_t<typename Range::value_type>>>
 {
     using result_type = range_trait_t<typename Range::value_type>;
-    using result_pair = std::pair<size_t, result_type>;
+    using result_pair = std::pair<size_t, std::optional<result_type>>;
 
     std::promise<result_pair> resPro;
     auto resfut = resPro.get_future();
@@ -348,7 +666,7 @@ auto getOrderWithResultPair(Func&& checkFun, Range&& funcs)
                 try
                 {
                     auto res = funcs[i].get();
-                    if (checkFun(res) || (i == count - 1))
+                    if (checkFun(res))
                     {
                         if (!sharedData->exchange(true))
                         {
@@ -359,18 +677,14 @@ auto getOrderWithResultPair(Func&& checkFun, Range&& funcs)
                 }
                 catch (...)
                 {
-                    if (i == count - 1 && !sharedData->exchange(true))
-                    {
-                        try
-                        {
-                            throw;
-                        }
-                        catch (...)
-                        {
-                            resPro.set_exception(std::current_exception());
-                        }
-                    }
+                    // Skip failed tasks
                 }
+            }
+
+            // No task matched the condition
+            if (!sharedData->exchange(true))
+            {
+                resPro.set_value(std::make_pair(count, std::nullopt));
             }
         });
 
@@ -481,30 +795,25 @@ inline auto Any(const Range& range, Args&&...args) -> Task<std::pair<size_t, typ
  * \brief Creates a task that returns the first result that matches the condition.
  *
  * \tparam Func The type of the condition function.
- * \tparam Ret The type of the default value.
  * \tparam Range The type of the range of tasks.
  * \tparam Args The types of the arguments to pass to the tasks.
  * \param fn The condition function.
- * \param def The default value.
  * \param range The range of tasks.
  * \param args The arguments to pass to the tasks.
  * \return A task that returns a pair of index and result of the first task that matches the condition.
  */
-template<typename Func, typename Ret, typename Range, typename... Args>
-inline auto AnyWith(Func fn, Ret def, const Range& range, Args&&...args)
-    -> Task<std::pair<int, typename Range::value_type::return_type>()>
+template<typename Func, typename Range, typename... Args>
+inline auto AnyWith(Func fn, const Range& range, Args&&...args)
+    -> Task<std::pair<int, std::optional<typename Range::value_type::return_type>>()>
 {
     using result_type = typename Range::value_type::return_type;
-    using pair_type = std::pair<int, result_type>;
+    using pair_type = std::pair<int, std::optional<result_type>>;
 
     return Task<pair_type()>(
-        [range,
-         fn = std::move(fn),
-         def = std::move(def),
-         tArgs = std::make_tuple(std::forward<Args>(args)...)]() mutable
+        [range, fn = std::move(fn), tArgs = std::make_tuple(std::forward<Args>(args)...)]() mutable
         {
             auto funcs = aux::transform(range, tArgs);
-            return aux::getAnyWithResultPair(std::move(fn), std::move(def), std::move(funcs));
+            return aux::getAnyWithResultPair(std::move(fn), std::move(funcs));
         });
 }
 
@@ -521,10 +830,10 @@ inline auto AnyWith(Func fn, Ret def, const Range& range, Args&&...args)
  */
 template<typename Func, typename Range, typename... Args>
 inline auto OrderWith(Func fn, const Range& range, Args&&...args)
-    -> Task<std::pair<size_t, typename Range::value_type::return_type>()>
+    -> Task<std::pair<size_t, std::optional<typename Range::value_type::return_type>>()>
 {
     using result_type = typename Range::value_type::return_type;
-    using pair_type = std::pair<size_t, result_type>;
+    using pair_type = std::pair<size_t, std::optional<result_type>>;
 
     return Task<pair_type()>(
         [range, fn = std::move(fn), tArgs = std::make_tuple(std::forward<Args>(args)...)]() mutable
@@ -534,12 +843,5 @@ inline auto OrderWith(Func fn, const Range& range, Args&&...args)
         });
 }
 } // namespace hyp
-
-#define HypTask      hyp::Task
-#define HypAll       hyp::All
-#define HypBest      hyp::Best
-#define HypAny       hyp::Any
-#define HypAnyWith   hyp::AnyWith
-#define HypOrderWith hyp::OrderWith
 
 #endif // !_HYPARA_HPP_

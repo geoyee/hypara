@@ -1,168 +1,92 @@
-#include "hypara.hpp"
-
-#include <cmath>
+#include <hypara.hpp>
 #include <iostream>
-#include <numeric>
-#include <thread>
 
-using namespace std::chrono_literals;
-
-class Timer final
+struct A
 {
-    using time_point_type = std::decay_t<decltype(std::chrono::high_resolution_clock::now())>;
-
-public:
-    Timer(const Timer&) = delete;
-    Timer(Timer&&) = delete;
-
-    Timer() : m_start(std::chrono::high_resolution_clock::now()) { }
-
-    ~Timer()
+    double f1(int x)
     {
-        time_point_type end = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - m_start);
-        std::cout << "This block finished and use " << static_cast<int>(duration.count()) << " ms" << std::endl;
+        return std::pow(x, 1);
     }
 
-private:
-    time_point_type m_start;
+    static double f2(int x)
+    {
+        return std::pow(x, 2);
+    }
 };
-
-#define TEST_BLOCK_START                                                                                               \
-    {                                                                                                                  \
-        Timer _;
-
-#define TEST_BLOCK_END                                                                                                 \
-    }                                                                                                                  \
-    std::cout << std::endl;
 
 int main()
 {
-    TEST_BLOCK_START
-    {
-        using TaskType = HypTask<double(int)>;
-        std::vector<TaskType> tasks{TaskType([](int x) -> double { return std::pow(x, 0); }),
-                                    TaskType([](int x) -> double { return std::pow(x, 1); }),
-                                    TaskType([](int x) -> double { return std::pow(x, 2); }),
-                                    TaskType([](int x) -> double { return std::pow(x, 3); })};
-        double res =
-            HypAll(tasks, 5)
-                .then([](const std::vector<double>& res) { return std::accumulate(res.begin(), res.end(), 0.0); })
-                .get();
-        std::cout << "5^0 + 5^1 + 5^2 + 5^3 = " << res << std::endl;
-    }
-    TEST_BLOCK_END
+    A a;
 
-    TEST_BLOCK_START
-    {
-        using TaskType = HypTask<double(int)>;
-        std::vector<TaskType> tasks{TaskType([](int x) -> double { return std::pow(x, 2) + 0.1; }),
-                                    TaskType([](int x) -> double { return std::pow(x, 2) + 0.01; }),
-                                    TaskType([](int x) -> double { return std::pow(x, 2) + 0.001; }),
-                                    TaskType([](int x) -> double { return std::pow(x, 2) + 0.0001; })};
-        auto comparison = [](const double& a, const double& b) { return a < b; };
-        double res = HypBest(comparison, tasks, 5).get();
-        std::cout << "5^2 = " << res << std::endl;
-    }
-    TEST_BLOCK_END
+    // 创建任务组，指定任务签名: double(int)
+    hyp::TaskGroup<double, int> tasks;
 
-    TEST_BLOCK_START
-    {
-        using TaskType = HypTask<double(int)>;
-        std::vector<TaskType> tasks{TaskType(
-                                        [](int x) -> double
-                                        {
-                                            std::this_thread::sleep_for(200ms);
-                                            return std::pow(x, 2);
-                                        }),
-                                    TaskType(
-                                        [](int x) -> double
-                                        {
-                                            std::this_thread::sleep_for(300ms);
-                                            return std::pow(x, 2);
-                                        }),
-                                    TaskType(
-                                        [](int x) -> double
-                                        {
-                                            std::this_thread::sleep_for(100ms);
-                                            return std::pow(x, 2);
-                                        }),
-                                    TaskType(
-                                        [](int x) -> double
-                                        {
-                                            std::this_thread::sleep_for(400ms);
-                                            return std::pow(x, 2);
-                                        })};
-        std::pair<size_t, double> res = HypAny(tasks, 5).get();
-        std::cout << "Index = " << res.first << ", and res = " << res.second << std::endl;
-    }
-    TEST_BLOCK_END
+    // 添加各种类型的任务
+    tasks.add_function([](int x) -> double { return std::pow(x, 0); });
+    tasks.add_function(&A::f1, &a); // 成员函数
+    tasks.add_function(&A::f2);     // 静态成员函数
 
-    TEST_BLOCK_START
-    {
-        using TaskType = HypTask<double(int)>;
-        std::vector<TaskType> tasks{TaskType(
-                                        [](int x) -> double
-                                        {
-                                            std::this_thread::sleep_for(200ms);
-                                            return std::pow(x, 2);
-                                        }),
-                                    TaskType(
-                                        [](int x) -> double
-                                        {
-                                            std::this_thread::sleep_for(300ms);
-                                            return std::pow(x, 2);
-                                        }),
-                                    TaskType(
-                                        [](int x) -> double
-                                        {
-                                            std::this_thread::sleep_for(100ms);
-                                            return -std::pow(x, 2);
-                                        }),
-                                    TaskType(
-                                        [](int x) -> double
-                                        {
-                                            std::this_thread::sleep_for(400ms);
-                                            return std::pow(x, 2);
-                                        })};
-        auto check = [](double x) { return x > 0; };
-        std::pair<int, double> res = HypAnyWith(check, 0, tasks, 5).get();
-        std::cout << "Index = " << res.first << ", and res = " << res.second << std::endl;
-    }
-    TEST_BLOCK_END
+    // 设置超时时间
+    auto timeout = std::chrono::milliseconds(100);
 
-    TEST_BLOCK_START
+    // 执行不同策略
+    auto r1 = tasks.execute_any(5, timeout);
+    auto r2 = tasks.execute_any_with([](double res) { return res > 10; }, 5, timeout);
+    auto r3 = tasks.execute_all(5, timeout);
+    auto r4 = tasks.execute_best([](double a, double b) { return a < b; }, 5, timeout);
+    auto r5 = tasks.execute_order_with([](double res) { return res > 10; }, 5, timeout);
+
+    // 输出结果
+    std::cout << "Any: ";
+    if (r1)
     {
-        using TaskType = HypTask<double(int)>;
-        std::vector<TaskType> tasks{TaskType(
-                                        [](int x) -> double
-                                        {
-                                            std::this_thread::sleep_for(200ms);
-                                            return -std::pow(x, 2);
-                                        }),
-                                    TaskType(
-                                        [](int x) -> double
-                                        {
-                                            std::this_thread::sleep_for(300ms);
-                                            return std::pow(x, 2);
-                                        }),
-                                    TaskType(
-                                        [](int x) -> double
-                                        {
-                                            std::this_thread::sleep_for(100ms);
-                                            return std::pow(x, 2);
-                                        }),
-                                    TaskType(
-                                        [](int x) -> double
-                                        {
-                                            std::this_thread::sleep_for(400ms);
-                                            return std::pow(x, 2);
-                                        })};
-        auto check = [](const double& x) { return x > 0; };
-        std::pair<size_t, double> res = HypOrderWith(check, tasks, 5).get();
-        std::cout << "Index = " << res.first << ", and res = " << res.second << std::endl;
+        std::cout << *r1;
     }
-    TEST_BLOCK_END
+    else
+    {
+        std::cout << "timeout";
+    }
+    std::cout << std::endl;
+
+    std::cout << "AnyWith: ";
+    if (r2)
+    {
+        std::cout << *r2;
+    }
+    else
+    {
+        std::cout << "not found";
+    }
+    std::cout << std::endl;
+
+    std::cout << "All: ";
+    for (auto val : r3)
+    {
+        std::cout << val << " ";
+    }
+    std::cout << std::endl;
+
+    std::cout << "Best: ";
+    if (r4)
+    {
+        std::cout << *r4;
+    }
+    else
+    {
+        std::cout << "no results";
+    }
+    std::cout << std::endl;
+
+    std::cout << "OrderWith: ";
+    if (r5)
+    {
+        std::cout << *r5;
+    }
+    else
+    {
+        std::cout << "not found";
+    }
+    std::cout << std::endl;
 
     return 0;
 }
