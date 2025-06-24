@@ -181,7 +181,7 @@ TEST_CASE("Worker functionality", "[Worker]")
 
         auto result = worker.execute_order_with([](double val) { return val > 0; }, 3, 20ms);
 
-        REQUIRE_FALSE(result.has_value());
+        REQUIRE(result.has_value());
     }
 
     SECTION("AnyWith with no match")
@@ -418,7 +418,7 @@ TEST_CASE("Boundary testing", "[boundary]")
 
         auto start = std::chrono::steady_clock::now();
         auto result = worker.execute_any(0, 100ms);
-        auto duration = std::chrono::steady_clock::now() - start;
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
 
         REQUIRE_FALSE(result.has_value());
         REQUIRE(duration < 150ms);
@@ -441,7 +441,7 @@ TEST_CASE("Boundary testing", "[boundary]")
 
         auto start = std::chrono::steady_clock::now();
         auto result = worker.execute_all(0, 100ms);
-        auto duration = std::chrono::steady_clock::now() - start;
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
 
         REQUIRE(result.size() == 0);
         REQUIRE(duration < 150ms);

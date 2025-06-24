@@ -104,7 +104,8 @@ auto transform(const Range& range, const std::tuple<Args...>& tArgs)
 }
 
 template<typename Range>
-auto getAnyResultPair(Range&& funcs) -> std::pair<size_t, range_trait_t<typename Range::value_type>>
+auto getAnyResultPair(Range&& funcs, std::chrono::milliseconds timeout)
+    -> std::pair<size_t, range_trait_t<typename Range::value_type>>
 {
     using result_type = range_trait_t<typename Range::value_type>;
     using result_pair = std::pair<size_t, result_type>;
@@ -114,13 +115,36 @@ auto getAnyResultPair(Range&& funcs) -> std::pair<size_t, range_trait_t<typename
     auto sharedData = std::make_shared<std::atomic<bool>>(false);
     const size_t count = funcs.size();
     auto isFinished = std::make_shared<std::vector<std::atomic<bool>>>(count);
+    for (size_t i = 0; i < count; ++i)
+    {
+        (*isFinished)[i] = false;
+    }
+
+    auto start_time = std::chrono::steady_clock::now();
 
     std::thread monitor(
-        [funcs = std::forward<Range>(funcs), resPro = std::move(resPro), sharedData, isFinished, count]() mutable
+        [funcs = std::forward<Range>(funcs),
+         resPro = std::move(resPro),
+         sharedData,
+         isFinished,
+         count,
+         timeout,
+         start_time]() mutable
         {
             size_t completed = 0;
             while (completed < count && !sharedData->load())
             {
+                // Check timeout
+                if (timeout.count() > 0)
+                {
+                    auto current_time = std::chrono::steady_clock::now();
+                    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time);
+                    if (elapsed >= timeout)
+                    {
+                        break;
+                    }
+                }
+
                 for (size_t i = 0; i < count; ++i)
                 {
                     if ((*isFinished)[i])
@@ -164,7 +188,7 @@ auto getAnyResultPair(Range&& funcs) -> std::pair<size_t, range_trait_t<typename
 template<typename Func,
          typename Range,
          std::enable_if_t<std::is_invocable_r_v<bool, Func, range_trait_t<typename Range::value_type>>, bool> = true>
-auto getAnyWithResultPair(Func checkFun, Range&& funcs)
+auto getAnyWithResultPair(Func checkFun, Range&& funcs, std::chrono::milliseconds timeout)
     -> std::pair<int, std::optional<range_trait_t<typename Range::value_type>>>
 {
     using result_type = range_trait_t<typename Range::value_type>;
@@ -175,6 +199,12 @@ auto getAnyWithResultPair(Func checkFun, Range&& funcs)
     auto sharedData = std::make_shared<std::atomic<bool>>(false);
     const size_t count = funcs.size();
     auto isFinished = std::make_shared<std::vector<std::atomic<bool>>>(count);
+    for (size_t i = 0; i < count; ++i)
+    {
+        (*isFinished)[i] = false;
+    }
+
+    auto start_time = std::chrono::steady_clock::now();
 
     std::thread monitor(
         [funcs = std::forward<Range>(funcs),
@@ -182,11 +212,24 @@ auto getAnyWithResultPair(Func checkFun, Range&& funcs)
          resPro = std::move(resPro),
          sharedData,
          isFinished,
-         count]() mutable
+         count,
+         timeout,
+         start_time]() mutable
         {
             size_t completed = 0;
             while (completed < count && !sharedData->load())
             {
+                // Check timeout
+                if (timeout.count() > 0)
+                {
+                    auto current_time = std::chrono::steady_clock::now();
+                    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time);
+                    if (elapsed >= timeout)
+                    {
+                        break;
+                    }
+                }
+
                 for (size_t i = 0; i < count; ++i)
                 {
                     if ((*isFinished)[i])
@@ -232,7 +275,7 @@ auto getAnyWithResultPair(Func checkFun, Range&& funcs)
 template<typename Func,
          typename Range,
          std::enable_if_t<std::is_invocable_r_v<bool, Func, range_trait_t<typename Range::value_type>>, bool> = true>
-auto getOrderWithResultPair(Func&& checkFun, Range&& funcs)
+auto getOrderWithResultPair(Func&& checkFun, Range&& funcs, std::chrono::milliseconds timeout)
     -> std::pair<size_t, std::optional<range_trait_t<typename Range::value_type>>>
 {
     using result_type = range_trait_t<typename Range::value_type>;
@@ -242,11 +285,15 @@ auto getOrderWithResultPair(Func&& checkFun, Range&& funcs)
     auto resfut = resPro.get_future();
     auto sharedData = std::make_shared<std::atomic<bool>>(false);
 
+    auto start_time = std::chrono::steady_clock::now();
+
     std::thread monitor(
         [funcs = std::forward<Range>(funcs),
          checkFun = std::forward<Func>(checkFun),
          resPro = std::move(resPro),
-         sharedData]() mutable
+         sharedData,
+         timeout,
+         start_time]() mutable
         {
             const size_t count = funcs.size();
             for (size_t i = 0; i < count; ++i)
@@ -256,15 +303,29 @@ auto getOrderWithResultPair(Func&& checkFun, Range&& funcs)
                     break;
                 }
 
+                // Check timeout
+                if (timeout.count() > 0)
+                {
+                    auto current_time = std::chrono::steady_clock::now();
+                    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time);
+                    if (elapsed >= timeout)
+                    {
+                        break;
+                    }
+                }
+
                 try
                 {
-                    auto res = funcs[i].get();
-                    if (checkFun(res))
+                    if (funcs[i].wait_for(std::chrono::milliseconds(1)) == std::future_status::ready)
                     {
-                        if (!sharedData->exchange(true))
+                        auto res = funcs[i].get();
+                        if (checkFun(res))
                         {
-                            resPro.set_value(std::make_pair(i, std::move(res)));
-                            return;
+                            if (!sharedData->exchange(true))
+                            {
+                                resPro.set_value(std::make_pair(i, std::move(res)));
+                                return;
+                            }
                         }
                     }
                 }
@@ -343,7 +404,22 @@ inline auto Any(const Range& range, Args&&...args) -> Task<std::pair<size_t, typ
         [range, tArgs = std::make_tuple(std::forward<Args>(args)...)]() mutable
         {
             auto funcs = aux::transform(range, tArgs);
-            return aux::getAnyResultPair(std::move(funcs));
+            return aux::getAnyResultPair(std::move(funcs), std::chrono::milliseconds(0));
+        });
+}
+
+template<typename Range, typename... Args>
+inline auto Any(const Range& range, std::chrono::milliseconds timeout, Args&&...args)
+    -> Task<std::pair<size_t, typename Range::value_type::return_type>()>
+{
+    using result_type = typename Range::value_type::return_type;
+    using pair_type = std::pair<size_t, result_type>;
+
+    return Task<pair_type()>(
+        [range, timeout, tArgs = std::make_tuple(std::forward<Args>(args)...)]() mutable
+        {
+            auto funcs = aux::transform(range, tArgs);
+            return aux::getAnyResultPair(std::move(funcs), timeout);
         });
 }
 
@@ -358,7 +434,22 @@ inline auto AnyWith(Func fn, const Range& range, Args&&...args)
         [range, fn = std::move(fn), tArgs = std::make_tuple(std::forward<Args>(args)...)]() mutable
         {
             auto funcs = aux::transform(range, tArgs);
-            return aux::getAnyWithResultPair(std::move(fn), std::move(funcs));
+            return aux::getAnyWithResultPair(std::move(fn), std::move(funcs), std::chrono::milliseconds(0));
+        });
+}
+
+template<typename Func, typename Range, typename... Args>
+inline auto AnyWith(Func fn, const Range& range, std::chrono::milliseconds timeout, Args&&...args)
+    -> Task<std::pair<int, std::optional<typename Range::value_type::return_type>>()>
+{
+    using result_type = typename Range::value_type::return_type;
+    using pair_type = std::pair<int, std::optional<result_type>>;
+
+    return Task<pair_type()>(
+        [range, fn = std::move(fn), timeout, tArgs = std::make_tuple(std::forward<Args>(args)...)]() mutable
+        {
+            auto funcs = aux::transform(range, tArgs);
+            return aux::getAnyWithResultPair(std::move(fn), std::move(funcs), timeout);
         });
 }
 
@@ -373,7 +464,22 @@ inline auto OrderWith(Func fn, const Range& range, Args&&...args)
         [range, fn = std::move(fn), tArgs = std::make_tuple(std::forward<Args>(args)...)]() mutable
         {
             auto funcs = aux::transform(range, tArgs);
-            return aux::getOrderWithResultPair(std::move(fn), std::move(funcs));
+            return aux::getOrderWithResultPair(std::move(fn), std::move(funcs), std::chrono::milliseconds(0));
+        });
+}
+
+template<typename Func, typename Range, typename... Args>
+inline auto OrderWith(Func fn, const Range& range, std::chrono::milliseconds timeout, Args&&...args)
+    -> Task<std::pair<size_t, std::optional<typename Range::value_type::return_type>>()>
+{
+    using result_type = typename Range::value_type::return_type;
+    using pair_type = std::pair<size_t, std::optional<result_type>>;
+
+    return Task<pair_type()>(
+        [range, fn = std::move(fn), timeout, tArgs = std::make_tuple(std::forward<Args>(args)...)]() mutable
+        {
+            auto funcs = aux::transform(range, tArgs);
+            return aux::getOrderWithResultPair(std::move(fn), std::move(funcs), timeout);
         });
 }
 
@@ -411,24 +517,23 @@ public:
             return std::nullopt;
         }
 
-        // 使用Any组合函数
-        auto any_task = Any(tasks_vector(), std::forward<Args>(args)...);
+        // 将超时转换为毫秒
+        auto ms_timeout = std::chrono::duration_cast<std::chrono::milliseconds>(timeout);
+
+        // 使用带超时的Any组合函数
+        auto any_task = Any(tasks_vector(), ms_timeout, std::forward<Args>(args)...);
         auto fut = any_task.run();
 
-        if (timeout.count() > 0)
+        // 等待结果（这里不需要额外等待，因为任务内部已经处理超时）
+        try
         {
-            if (fut.wait_for(timeout) == std::future_status::timeout)
-            {
-                return std::nullopt;
-            }
+            auto [index, result] = fut.get();
+            return std::make_pair(tasks_[index].first, result);
         }
-        else
+        catch (const std::runtime_error&)
         {
-            fut.wait();
+            return std::nullopt;
         }
-
-        auto [index, result] = fut.get();
-        return std::make_pair(tasks_[index].first, result);
     }
 
     std::optional<std::pair<std::string, Ret>> execute_any_with(
@@ -439,17 +544,12 @@ public:
             return std::nullopt;
         }
 
-        // 使用AnyWith组合函数
-        auto any_with_task = AnyWith(condition, tasks_vector(), std::forward<Args>(args)...);
-        auto fut = any_with_task.run();
+        // 将超时转换为毫秒
+        auto ms_timeout = std::chrono::duration_cast<std::chrono::milliseconds>(timeout);
 
-        if (timeout.count() > 0)
-        {
-            if (fut.wait_for(timeout) == std::future_status::timeout)
-            {
-                return std::nullopt;
-            }
-        }
+        // 使用带超时的AnyWith组合函数
+        auto any_with_task = AnyWith(condition, tasks_vector(), ms_timeout, std::forward<Args>(args)...);
+        auto fut = any_with_task.run();
 
         auto [index, result_opt] = fut.get();
         if (index >= 0 && result_opt)
@@ -468,24 +568,45 @@ public:
             return results;
         }
 
-        // 使用All组合函数
-        auto all_task = All(tasks_vector(), std::forward<Args>(args)...);
-        auto fut = all_task.run();
+        auto tArgs = std::make_tuple(std::forward<Args>(args)...);
+        auto funcs = aux::transform(tasks_vector(), tArgs);
 
-        if (timeout.count() > 0)
+        auto start_time = std::chrono::steady_clock::now();
+        for (size_t i = 0; i < funcs.size(); ++i)
         {
-            if (fut.wait_for(timeout) == std::future_status::timeout)
+            if (timeout.count() > 0)
             {
-                // 超时情况下返回空数组
-                return results;
+                auto current_time = std::chrono::steady_clock::now();
+                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time);
+                auto remaining = timeout - elapsed;
+
+                if (remaining.count() <= 0)
+                {
+                    // 超时返回部分结果（但根据要求返回空结果）
+                    return {};
+                }
+
+                if (funcs[i].wait_for(remaining) != std::future_status::ready)
+                {
+                    // 超时返回空结果
+                    return {};
+                }
+            }
+            else
+            {
+                funcs[i].wait();
+            }
+
+            try
+            {
+                results.emplace_back(tasks_[i].first, funcs[i].get());
+            }
+            catch (...)
+            {
+                // 处理异常，可以记录日志或跳过
             }
         }
 
-        auto result_vec = fut.get();
-        for (size_t i = 0; i < result_vec.size(); i++)
-        {
-            results.emplace_back(tasks_[i].first, result_vec[i]);
-        }
         return results;
     }
 
@@ -497,29 +618,21 @@ public:
             return std::nullopt;
         }
 
-        // 使用Best组合函数
-        auto best_task = Best(comparator, tasks_vector(), std::forward<Args>(args)...);
-        auto fut = best_task.run();
+        // 获取所有结果（带超时）
+        auto all_results = execute_all(std::forward<Args>(args)..., timeout);
 
-        if (timeout.count() > 0)
+        if (all_results.empty())
         {
-            if (fut.wait_for(timeout) == std::future_status::timeout)
-            {
-                return std::nullopt;
-            }
+            return std::nullopt;
         }
 
-        auto best_result = fut.get();
-        // 在结果中找到最佳任务
-        auto all_results = execute_all(args..., timeout);
-        for (auto& [name, value] : all_results)
-        {
-            if (value == best_result)
-            {
-                return std::make_pair(name, value);
-            }
-        }
-        return std::nullopt;
+        // 找到最佳结果
+        auto best_it =
+            std::min_element(all_results.begin(),
+                             all_results.end(),
+                             [&comparator](const auto& a, const auto& b) { return comparator(a.second, b.second); });
+
+        return *best_it;
     }
 
     std::optional<std::pair<std::string, Ret>> execute_order_with(
@@ -530,17 +643,12 @@ public:
             return std::nullopt;
         }
 
-        // 使用OrderWith组合函数
-        auto order_with_task = OrderWith(condition, tasks_vector(), std::forward<Args>(args)...);
-        auto fut = order_with_task.run();
+        // 将超时转换为毫秒
+        auto ms_timeout = std::chrono::duration_cast<std::chrono::milliseconds>(timeout);
 
-        if (timeout.count() > 0)
-        {
-            if (fut.wait_for(timeout) == std::future_status::timeout)
-            {
-                return std::nullopt;
-            }
-        }
+        // 使用带超时的OrderWith组合函数
+        auto order_with_task = OrderWith(condition, tasks_vector(), ms_timeout, std::forward<Args>(args)...);
+        auto fut = order_with_task.run();
 
         auto [index, result_opt] = fut.get();
         if (result_opt)
