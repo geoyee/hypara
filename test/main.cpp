@@ -6,7 +6,6 @@
 
 using namespace std::chrono_literals;
 
-// 测试函数
 double fast_task(int x)
 {
     return std::pow(x, 2);
@@ -61,7 +60,7 @@ TEST_CASE("Task basic functionality", "[task]")
     {
         TestClass obj;
         hyp::Task<double(int)> task([&obj](int x) { return obj.member_task(x); });
-        REQUIRE(task.get(4) == Catch::Approx(8.0)); // 4^1.5 = 8
+        REQUIRE(task.get(4) == Catch::Approx(8.0));
     }
 }
 
@@ -91,7 +90,7 @@ TEST_CASE("Worker functionality", "[Worker]")
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
 
         REQUIRE(result.has_value());
-        REQUIRE(result.value().second == Catch::Approx(9.0)); // fast_task(3) = 9
+        REQUIRE(result.value().second == Catch::Approx(9.0));
         REQUIRE(ms < 50);
     }
 
@@ -104,7 +103,7 @@ TEST_CASE("Worker functionality", "[Worker]")
         auto result = worker.execute_any_with([](double val) { return val > 250; }, 10);
 
         REQUIRE(result.has_value());
-        REQUIRE(result.value().second == Catch::Approx(300.0)); // 10*30=300
+        REQUIRE(result.value().second == Catch::Approx(300.0));
     }
 
     SECTION("Execute All strategy")
@@ -120,7 +119,7 @@ TEST_CASE("Worker functionality", "[Worker]")
 
         auto results = worker.execute_all(3, 100ms);
 
-        REQUIRE(results.size() >= 2); // 至少 fast 和 conditional 应该完成
+        REQUIRE(results.size() >= 2);
         bool fast_found = false, conditional_found = false;
         for (auto& [name, value] : results)
         {
@@ -145,11 +144,10 @@ TEST_CASE("Worker functionality", "[Worker]")
         worker.add_function("func14", [](int x) { return x * 2.0; });
         worker.add_function("func15", [](int x) { return x * 3.0; });
 
-        auto result = worker.execute_best([](double a, double b) { return a < b; }, // min value
-                                          5);
+        auto result = worker.execute_best([](double a, double b) { return a < b; }, 5);
 
         REQUIRE(result.has_value());
-        REQUIRE(result.value().second == Catch::Approx(5.0)); // 5*1=5
+        REQUIRE(result.value().second == Catch::Approx(5.0));
     }
 
     SECTION("Execute OrderWith strategy")
@@ -161,7 +159,7 @@ TEST_CASE("Worker functionality", "[Worker]")
         auto result = worker.execute_order_with([](double val) { return val > 12; }, 5);
 
         REQUIRE(result.has_value());
-        REQUIRE(result.value().second == Catch::Approx(15.0)); // Third task: 5*3=15
+        REQUIRE(result.value().second == Catch::Approx(15.0));
     }
 
     SECTION("Execute OrderWith with timeout")
@@ -231,12 +229,12 @@ TEST_CASE("Composite tasks", "[composite]")
                 std::this_thread::sleep_for(50ms);
                 return 1.0;
             });
-        tasks.emplace_back([](int) { return 2.0; }); // 立即返回
+        tasks.emplace_back([](int) { return 2.0; });
 
         auto composite = hyp::Any(tasks, 0);
         auto result = composite.get();
 
-        REQUIRE(result.first == 1); // 索引为1的任务应该先完成
+        REQUIRE(result.first == 1);
         REQUIRE(result.second == Catch::Approx(2.0));
     }
 
@@ -247,11 +245,9 @@ TEST_CASE("Composite tasks", "[composite]")
         tasks.emplace_back([](int x) { return x * 1.0; });
         tasks.emplace_back([](int x) { return x * 2.0; });
 
-        auto composite = hyp::Best([](double a, double b) { return a < b; }, // min value
-                                   tasks,
-                                   5);
+        auto composite = hyp::Best([](double a, double b) { return a < b; }, tasks, 5);
 
-        REQUIRE(composite.get() == Catch::Approx(5.0)); // 5*1=5
+        REQUIRE(composite.get() == Catch::Approx(5.0));
     }
 }
 
@@ -272,7 +268,7 @@ TEST_CASE("Timeout handling", "[timeout]")
         auto result = worker.execute_any(0, 50ms);
 
         REQUIRE(result.has_value());
-        REQUIRE(result.value().second == Catch::Approx(2.0)); // 快速任务应该完成
+        REQUIRE(result.value().second == Catch::Approx(2.0));
     }
 
     SECTION("AnyWith with timeout")
@@ -343,11 +339,10 @@ TEST_CASE("Timeout handling", "[timeout]")
                                 return x * 2.0;
                             });
 
-        auto result = worker.execute_best([](double a, double b) { return a < b; }, // min value
-                                          5);
+        auto result = worker.execute_best([](double a, double b) { return a < b; }, 5);
 
         REQUIRE(result.has_value());
-        REQUIRE(result.value().second == Catch::Approx(5.0)); // 第二个任务结果最好 (5*1=5)
+        REQUIRE(result.value().second == Catch::Approx(5.0));
     }
 }
 

@@ -6,12 +6,15 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <future>
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <queue>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -42,7 +45,25 @@ public:
 
     std::shared_future<Ret> run(Args... args) const
     {
-        return std::async(std::launch::async, m_fn, std::forward<Args>(args)...).share();
+        auto task = std::make_shared<std::packaged_task<Ret(Args...)>>(m_fn);
+        auto fut = task->get_future().share();
+
+        // Use detached thread to avoid blocking on future destruction
+        std::thread(
+            [task, args...]() mutable
+            {
+                try
+                {
+                    (*task)(std::forward<Args>(args)...);
+                }
+                catch (...)
+                {
+                    // Swallow exceptions to prevent termination
+                }
+            })
+            .detach();
+
+        return fut;
     }
 
     void wait(Args... args) const
@@ -331,7 +352,7 @@ auto getOrderWithResultPair(Func&& checkFun, Range&& funcs, std::chrono::millise
                 }
                 catch (...)
                 {
-                    // 忽略失败的任务
+                    // Ignore failed tasks
                 }
             }
 
@@ -517,14 +538,14 @@ public:
             return std::nullopt;
         }
 
-        // 将超时转换为毫秒
+        // Convert timeout to milliseconds
         auto ms_timeout = std::chrono::duration_cast<std::chrono::milliseconds>(timeout);
 
-        // 使用带超时的Any组合函数
+        // Use timeout-enabled Any combinator
         auto any_task = Any(tasks_vector(), ms_timeout, std::forward<Args>(args)...);
         auto fut = any_task.run();
 
-        // 等待结果（这里不需要额外等待，因为任务内部已经处理超时）
+        // Get result (no additional waiting needed as internal timeout is handled)
         try
         {
             auto [index, result] = fut.get();
@@ -544,10 +565,10 @@ public:
             return std::nullopt;
         }
 
-        // 将超时转换为毫秒
+        // Convert timeout to milliseconds
         auto ms_timeout = std::chrono::duration_cast<std::chrono::milliseconds>(timeout);
 
-        // 使用带超时的AnyWith组合函数
+        // Use timeout-enabled AnyWith combinator
         auto any_with_task = AnyWith(condition, tasks_vector(), ms_timeout, std::forward<Args>(args)...);
         auto fut = any_with_task.run();
 
@@ -568,46 +589,8 @@ public:
             return results;
         }
 
-        auto tArgs = std::make_tuple(std::forward<Args>(args)...);
-        auto funcs = aux::transform(tasks_vector(), tArgs);
-
-        auto start_time = std::chrono::steady_clock::now();
-        for (size_t i = 0; i < funcs.size(); ++i)
-        {
-            if (timeout.count() > 0)
-            {
-                auto current_time = std::chrono::steady_clock::now();
-                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time);
-                auto remaining = timeout - elapsed;
-
-                if (remaining.count() <= 0)
-                {
-                    // 超时返回部分结果（但根据要求返回空结果）
-                    return {};
-                }
-
-                if (funcs[i].wait_for(remaining) != std::future_status::ready)
-                {
-                    // 超时返回空结果
-                    return {};
-                }
-            }
-            else
-            {
-                funcs[i].wait();
-            }
-
-            try
-            {
-                results.emplace_back(tasks_[i].first, funcs[i].get());
-            }
-            catch (...)
-            {
-                // 处理异常，可以记录日志或跳过
-            }
-        }
-
-        return results;
+        // Use non-blocking execution
+        return execute_all_non_blocking(std::forward<Args>(args)..., timeout);
     }
 
     std::optional<std::pair<std::string, Ret>> execute_best(
@@ -618,7 +601,7 @@ public:
             return std::nullopt;
         }
 
-        // 获取所有结果（带超时）
+        // Get all results with timeout
         auto all_results = execute_all(std::forward<Args>(args)..., timeout);
 
         if (all_results.empty())
@@ -626,7 +609,7 @@ public:
             return std::nullopt;
         }
 
-        // 找到最佳结果
+        // Find best result
         auto best_it =
             std::min_element(all_results.begin(),
                              all_results.end(),
@@ -643,10 +626,10 @@ public:
             return std::nullopt;
         }
 
-        // 将超时转换为毫秒
+        // Convert timeout to milliseconds
         auto ms_timeout = std::chrono::duration_cast<std::chrono::milliseconds>(timeout);
 
-        // 使用带超时的OrderWith组合函数
+        // Use timeout-enabled OrderWith combinator
         auto order_with_task = OrderWith(condition, tasks_vector(), ms_timeout, std::forward<Args>(args)...);
         auto fut = order_with_task.run();
 
@@ -659,6 +642,61 @@ public:
     }
 
 private:
+    // Non-blocking execute_all implementation with precise timeout
+    std::vector<std::pair<std::string, Ret>> execute_all_non_blocking(Args... args,
+                                                                      std::chrono::steady_clock::duration timeout)
+    {
+        std::vector<std::pair<std::string, Ret>> results;
+        results.reserve(tasks_.size());
+
+        auto start_time = std::chrono::steady_clock::now();
+
+        for (size_t i = 0; i < tasks_.size(); ++i)
+        {
+            // Check if timeout has already been exceeded
+            if (timeout.count() > 0)
+            {
+                auto elapsed = std::chrono::steady_clock::now() - start_time;
+                if (elapsed >= timeout)
+                {
+                    // Timeout reached, return empty result
+                    return {};
+                }
+            }
+
+            // Start the task
+            auto fut = tasks_[i].second.run(args...);
+
+            // Calculate remaining timeout
+            auto remaining = timeout - (std::chrono::steady_clock::now() - start_time);
+
+            // Wait for the task with timeout
+            if (timeout.count() > 0)
+            {
+                if (fut.wait_for(remaining) != std::future_status::ready)
+                {
+                    // Timeout occurred, return empty result
+                    return {};
+                }
+            }
+            else
+            {
+                fut.wait();
+            }
+
+            try
+            {
+                results.emplace_back(tasks_[i].first, fut.get());
+            }
+            catch (...)
+            {
+                // Handle exception (log or skip)
+            }
+        }
+
+        return results;
+    }
+
     std::vector<TaskType> tasks_vector() const
     {
         std::vector<TaskType> tasks;
