@@ -147,13 +147,6 @@ struct range_trait<std::shared_future<Ret>>
     using type = Ret;
 };
 
-/** 
- * \brief A helper class to extract the return type of a task.
- *  
- * \tparam Ret The return type of the task.
- * \tparam Args The argument types that the task accepts.
- */
-template<typename Ret, typename... Args>
 template<typename T>
 using range_trait_t = typename range_trait<T>::type;
 
@@ -188,10 +181,10 @@ auto transform(const Range& range, const std::tuple<Args...>& tArgs)
  * \return A pair of the index of the task that completed and the result of the task.
  */
 template<typename Range>
-auto getAnyResultPair(Range&& funcs,
-                      std::chrono::milliseconds timeout) -> std::pair<size_t, range_trait_t<typename Range::value_type>>
+auto getAnyResultPair(Range&& funcs, std::chrono::milliseconds timeout)
+    -> std::pair<size_t, range_trait_t<typename std::decay_t<decltype(*std::begin(funcs))>>>
 {
-    using result_type = range_trait_t<typename Range::value_type>;
+    using result_type = range_trait_t<typename std::decay_t<decltype(*std::begin(funcs))>>;
     using result_pair = std::pair<size_t, result_type>;
 
     std::promise<result_pair> resPro;
@@ -278,13 +271,11 @@ auto getAnyResultPair(Range&& funcs,
  * \param timeout The maximum time to wait for any of the tasks to complete.
  * \return A pair of the index of the task that completed and the result of the task.
  */
-template<typename Func,
-         typename Range,
-         std::enable_if_t<std::is_invocable_r_v<bool, Func, range_trait_t<typename Range::value_type>>, bool> = true>
+template<typename Func, typename Range>
 auto getAnyWithResultPair(Func checkFun, Range&& funcs, std::chrono::milliseconds timeout)
-    -> std::pair<int, std::optional<range_trait_t<typename Range::value_type>>>
+    -> std::pair<int, std::optional<range_trait_t<typename std::decay_t<decltype(*std::begin(funcs))>>>>
 {
-    using result_type = range_trait_t<typename Range::value_type>;
+    using result_type = range_trait_t<typename std::decay_t<decltype(*std::begin(funcs))>>;
     using result_pair = std::pair<int, std::optional<result_type>>;
 
     std::promise<result_pair> resPro;
@@ -374,13 +365,11 @@ auto getAnyWithResultPair(Func checkFun, Range&& funcs, std::chrono::millisecond
  * \param timeout The maximum time to wait for all of the tasks to complete.
  * \return A pair of the index of the task that completed and the result of the task.
  */
-template<typename Func,
-         typename Range,
-         std::enable_if_t<std::is_invocable_r_v<bool, Func, range_trait_t<typename Range::value_type>>, bool> = true>
+template<typename Func, typename Range>
 auto getOrderWithResultPair(Func&& checkFun, Range&& funcs, std::chrono::milliseconds timeout)
-    -> std::pair<size_t, std::optional<range_trait_t<typename Range::value_type>>>
+    -> std::pair<size_t, std::optional<range_trait_t<typename std::decay_t<decltype(*std::begin(funcs))>>>>
 {
-    using result_type = range_trait_t<typename Range::value_type>;
+    using result_type = range_trait_t<typename std::decay_t<decltype(*std::begin(funcs))>>;
     using result_pair = std::pair<size_t, std::optional<result_type>>;
 
     std::promise<result_pair> resPro;
