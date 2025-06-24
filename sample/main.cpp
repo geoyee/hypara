@@ -18,29 +18,29 @@ struct Calculator
 int main()
 {
     Calculator calc;
-    hyp::TaskGroup<double, int> tasks;
+    hyp::Worker<double, int> worker;
 
     // 添加任务并命名
-    tasks.add_function("power_zero", [](int x) { return std::pow(x, 0); });
-    tasks.add_function("square", &Calculator::square, &calc);
-    tasks.add_function("cube", &Calculator::cube);
+    worker.add_function("power_zero", [](int x) { return std::pow(x, 0); });
+    worker.add_function("square", &Calculator::square, &calc);
+    worker.add_function("cube", &Calculator::cube);
 
     // Any 策略 - 获取第一个完成的任务结果
-    if (auto result = tasks.execute_any(5))
+    if (auto result = worker.execute_any(5))
     {
         auto [name, value] = *result;
         std::cout << "Any: " << name << " returned " << value << std::endl;
     }
 
     // AnyWith 策略 - 获取第一个满足条件的结果
-    if (auto result = tasks.execute_any_with([](double v) { return v > 100; }, 5))
+    if (auto result = worker.execute_any_with([](double v) { return v > 100; }, 5))
     {
         auto [name, value] = *result;
         std::cout << "AnyWith: " << name << " returned " << value << std::endl;
     }
 
     // All 策略 - 获取所有任务结果
-    auto all_results = tasks.execute_all(5);
+    auto all_results = worker.execute_all(5);
     std::cout << "All results:\n";
     for (auto& [name, value] : all_results)
     {
@@ -48,14 +48,14 @@ int main()
     }
 
     // Best 策略 - 获取最佳结果
-    if (auto result = tasks.execute_best([](double a, double b) { return a < b; }, 5))
+    if (auto result = worker.execute_best([](double a, double b) { return a < b; }, 5))
     {
         auto [name, value] = *result;
         std::cout << "Best: " << name << " returned " << value << std::endl;
     }
 
     // OrderWith 策略 - 按顺序获取满足条件的结果
-    if (auto result = tasks.execute_order_with([](double v) { return v > 10; }, 5))
+    if (auto result = worker.execute_order_with([](double v) { return v > 10; }, 5))
     {
         auto [name, value] = *result;
         std::cout << "OrderWith: " << name << " returned " << value << std::endl;
