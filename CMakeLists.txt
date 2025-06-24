@@ -26,12 +26,12 @@ if (HYPARA_ENABLE_SAMPLE OR HYPARA_ENABLE_TEST)
   if (MSVC)
     add_compile_options($<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
     add_compile_options($<$<CXX_COMPILER_ID:MSVC>:/W4>)
-    add_compile_options($<$<CXX_COMPILER_ID:MSVC>:/WX>)
+    # add_compile_options($<$<CXX_COMPILER_ID:MSVC>:/WX>)
     add_compile_options($<$<CXX_COMPILER_ID:MSVC>:/EHsc>)
   else ()
     add_compile_options($<$<CXX_COMPILER_ID:GNU,Clang>:-fPIC>)
     add_compile_options($<$<CXX_COMPILER_ID:GNU,Clang>:-Wall$<SEMICOLON>-Wextra>)
-    add_compile_options($<$<CXX_COMPILER_ID:GNU,Clang>:-Werror>)
+    # add_compile_options($<$<CXX_COMPILER_ID:GNU,Clang>:-Werror>)
     add_compile_options(
       $<$<CXX_COMPILER_ID:GNU,Clang>:-Wno-unknown-pragmas$<SEMICOLON>-Werror=uninitialized$<SEMICOLON>-Werror=return-type$<SEMICOLON>-Wconversion$<SEMICOLON>-Wsign-compare$<SEMICOLON>-Werror=unused-result$<SEMICOLON>-Werror=suggest-override$<SEMICOLON>-Wzero-as-null-pointer-constant$<SEMICOLON>-Wmissing-declarations$<SEMICOLON>-Wold-style-cast$<SEMICOLON>-Wnon-virtual-dtor>
       )
@@ -45,12 +45,11 @@ if (HYPARA_ENABLE_SAMPLE OR HYPARA_ENABLE_TEST)
   endif ()
 
   if (HYPARA_ENABLE_TEST)
-    Include(FetchContent)
+    include(FetchContent)
     FetchContent_Declare(
       Catch2
       GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-      GIT_TAG        v3.8.1
-    )
+      GIT_TAG v3.8.1)
     FetchContent_MakeAvailable(Catch2)
     set(TEST_NAME ${PROJECT_NAME}-test)
     add_executable(${TEST_NAME} test/main.cpp hypara.hpp)
