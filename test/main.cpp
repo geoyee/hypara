@@ -211,7 +211,7 @@ TEST_CASE("Composite tasks", "[composite]")
         tasks.emplace_back([](int x) { return x * 2.0; });
         tasks.emplace_back([](int x) { return x * 3.0; });
 
-        auto composite = hyp::All(tasks, 5);
+        auto composite = hyp::All(tasks, 0ms, 5);
         auto results = composite.get();
 
         REQUIRE(results.size() == 3);
@@ -231,7 +231,7 @@ TEST_CASE("Composite tasks", "[composite]")
             });
         tasks.emplace_back([](int) { return 2.0; });
 
-        auto composite = hyp::Any(tasks, 0);
+        auto composite = hyp::Any(tasks, 0ms, 0);
         auto result = composite.get();
 
         REQUIRE(result.first == 1);
@@ -245,7 +245,7 @@ TEST_CASE("Composite tasks", "[composite]")
         tasks.emplace_back([](int x) { return x * 1.0; });
         tasks.emplace_back([](int x) { return x * 2.0; });
 
-        auto composite = hyp::Best([](double a, double b) { return a < b; }, tasks, 5);
+        auto composite = hyp::Best([](double a, double b) { return a < b; }, tasks, 0ms, 5);
 
         REQUIRE(composite.get() == Catch::Approx(5.0));
     }
@@ -276,17 +276,17 @@ TEST_CASE("Timeout handling", "[timeout]")
         worker.add_function("func3",
                             [](int)
                             {
-                                std::this_thread::sleep_for(30ms);
+                                std::this_thread::sleep_for(20ms);
                                 return 10.0;
                             });
         worker.add_function("func4",
                             [](int)
                             {
-                                std::this_thread::sleep_for(40ms);
+                                std::this_thread::sleep_for(60ms);
                                 return 20.0;
                             });
 
-        auto result = worker.execute_any_with([](double val) { return val > 15; }, 3, 35ms);
+        auto result = worker.execute_any_with([](double val) { return val > 15; }, 3, 40ms);
 
         REQUIRE_FALSE(result.has_value());
     }
