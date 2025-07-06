@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.15 FATAL_ERROR)
 
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
 
 project(hypara LANGUAGES C CXX)
 
@@ -15,8 +16,10 @@ option(HYPARA_ENABLE_SAMPLE "Enable sample of hypara." ${IS_MAIN_PROJECT})
 option(HYPARA_ENABLE_TEST "Enable test of hypara." ${IS_MAIN_PROJECT})
 
 add_library(${PROJECT_NAME} INTERFACE)
+add_library(${PROJECT_NAME}::${PROJECT_NAME} ALIAS ${PROJECT_NAME})
 target_include_directories(${PROJECT_NAME} INTERFACE $<BUILD_INTERFACE:${${PROJECT_NAME}_SOURCE_DIR}>
                                                      $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+set_target_properties(${PROJECT_NAME} PROPERTIES UNITY_BUILD ON)
 
 if (HYPARA_ENABLE_SAMPLE OR HYPARA_ENABLE_TEST)
   set(CMAKE_CXX_STANDARD_REQUIRED ON)
