@@ -23,18 +23,18 @@
 namespace hyp
 {
 /**
- * \brief A class representing a task that can be executed with specified arguments.
- *
- * \tparam T The type of the task.
+ * \brief Represents an asynchronous task that can be executed with specified arguments.
+ * 
+ * \tparam T Function signature type (e.g., int(double, float))
  */
 template<typename T>
 class Task;
 
 /**
- * \brief A class representing a task that can be executed with specified arguments.
- *
- * \tparam Ret The return type of the task.
- * \tparam Args The argument types that the task accepts.
+ * \brief Specialization of Task for function signatures.
+ * 
+ * \tparam Ret Return type of the task
+ * \tparam Args Argument types that the task accepts
  */
 template<typename Ret, typename... Args>
 class Task<Ret(Args...)>
@@ -44,9 +44,10 @@ public:
     using function_type = std::function<Ret(Args...)>;
 
     /**
-     * \brief Constructs a Task with a callable.
-     *
-     * \param fn A callable object that takes Args... and returns Ret.
+     * \brief Constructs a Task from a callable object
+     * 
+     * \tparam Fn Type of the callable object
+     * \param fn Callable object to be wrapped
      */
     template<typename Fn, typename = std::enable_if_t<!std::is_same_v<std::decay_t<Fn>, Task>>>
     explicit Task(Fn&& fn) : m_fn(std::forward<Fn>(fn))
@@ -54,17 +55,16 @@ public:
     }
 
     /**
-     * \brief Executes the task with the specified arguments.
-     *
-     * \param args The arguments to pass to the task.
-     * \return A shared_future that represents the result of the task.
+     * \brief Executes the task asynchronously
+     * 
+     * \param args Arguments to pass to the task
+     * \return std::shared_future<Ret> Shared future representing the task result
      */
     std::shared_future<Ret> run(Args... args) const
     {
         auto task = std::make_shared<std::packaged_task<Ret(Args...)>>(m_fn);
         auto fut = task->get_future().share();
 
-        // Use detached thread to avoid blocking on future destruction
         std::thread(
             [task, args...]() mutable
             {
@@ -74,8 +74,7 @@ public:
                 }
                 catch (...)
                 {
-                    // Swallow exceptions to prevent termination
-                }
+                } // Suppress exceptions
             })
             .detach();
 
@@ -83,9 +82,9 @@ public:
     }
 
     /**
-     * \brief Waits for the task to complete and returns the result.
-     *
-     * \param args The arguments to pass to the task.
+     * \brief Blocks until the task completes
+     * 
+     * \param args Arguments to pass to the task
      */
     void wait(Args... args) const
     {
@@ -93,9 +92,10 @@ public:
     }
 
     /**
-     * \brief Waits for the task to complete and returns the result.
-     *
-     * \param args The arguments to pass to the task.
+     * \brief Executes the task and returns the result
+     * 
+     * \param args Arguments to pass to the task
+     * \return Ret Result of the task
      */
     Ret get(Args... args) const
     {
@@ -103,10 +103,11 @@ public:
     }
 
     /**
-     * \brief Continues the task with a new function.
-     *
-     * \param fn The function to continue with.
-     * \return A new Task that represents the continuation of the original task.
+     * \brief Chains another task to be executed after this one
+     * 
+     * \tparam Func Type of the continuation function
+     * \param fn Continuation function
+     * \return Task<NewRet(Args...)> New task representing the continuation
      */
     template<typename Func>
     auto then(Func&& fn) const -> Task<typename std::invoke_result_t<Func, Ret>(Args...)>
@@ -127,9 +128,9 @@ private:
 namespace aux
 {
 /**
- * \brief A helper class to extract the return type of a task.
- *
- * \tparam T The type of the task.
+ * \brief Type trait to extract the result type from futures
+ * 
+ * \tparam T Type to extract result from
  */
 template<typename T>
 struct range_trait
@@ -137,9 +138,10 @@ struct range_trait
     using type = T;
 };
 
-/** \brief A helper class to extract the return type of a task.
- *
- * \tparam Ret The return type of the task.
+/**
+ * \brief Specialization for std::shared_future
+ * 
+ * \tparam Ret Result type of the future
  */
 template<typename Ret>
 struct range_trait<std::shared_future<Ret>>
@@ -151,10 +153,13 @@ template<typename T>
 using range_trait_t = typename range_trait<T>::type;
 
 /**
- * \brief Transforms a range of tasks into a vector of futures.
- *
- * \tparam Range The range of tasks to transform.
- * \tparam Args The argument types that the tasks accept.
+ * \brief Transforms a range of tasks into a vector of futures
+ * 
+ * \tparam Range Type of the task range
+ * \tparam Args Argument types for the tasks
+ * \param range Container of tasks
+ * \param tArgs Arguments to pass to each task
+ * \return std::vector<std::shared_future<result_type>> Vector of futures
  */
 template<typename Range, typename... Args>
 auto transform(const Range& range, const std::tuple<Args...>& tArgs)
@@ -172,13 +177,12 @@ auto transform(const Range& range, const std::tuple<Args...>& tArgs)
 }
 
 /**
- * \brief Waits for any of the tasks to complete and returns the index and result.
- *
- * \tparam Range The range of tasks to wait for.
- * \tparam Args The argument types that the tasks accept.
- * \param funcs The range of tasks to wait for.
- * \param timeout The maximum time to wait for any of the tasks to complete.
- * \return A pair of the index of the task that completed and the result of the task.
+ * \brief Waits for any task to complete and returns the first valid result
+ * 
+ * \tparam Range Type of future container
+ * \param funcs Container of futures
+ * \param timeout Maximum duration to wait
+ * \return std::pair<size_t, result_type> Index and result of the completed task
  */
 template<typename Range>
 auto getAnyResultPair(Range&& funcs, std::chrono::milliseconds timeout)
@@ -211,7 +215,6 @@ auto getAnyResultPair(Range&& funcs, std::chrono::milliseconds timeout)
             size_t completed = 0;
             while (completed < count && !sharedData->load())
             {
-                // Check timeout
                 if (timeout.count() > 0)
                 {
                     auto current_time = std::chrono::steady_clock::now();
@@ -253,8 +256,7 @@ auto getAnyResultPair(Range&& funcs, std::chrono::milliseconds timeout)
 
             if (!sharedData->exchange(true))
             {
-                resPro.set_exception(
-                    std::make_exception_ptr(std::runtime_error("All tasks failed or no task returned a valid result")));
+                resPro.set_exception(std::make_exception_ptr(std::runtime_error("All tasks failed or timed out")));
             }
         });
 
@@ -263,13 +265,14 @@ auto getAnyResultPair(Range&& funcs, std::chrono::milliseconds timeout)
 }
 
 /**
- * \brief Waits for any of the tasks to complete and returns the index and result.
- *
- * \tparam Range The range of tasks to wait for.
- * \tparam Args The argument types that the tasks accept.
- * \param funcs The range of tasks to wait for.
- * \param timeout The maximum time to wait for any of the tasks to complete.
- * \return A pair of the index of the task that completed and the result of the task.
+ * \brief Waits for any task satisfying a condition to complete
+ * 
+ * \tparam Func Type of condition function
+ * \tparam Range Type of future container
+ * \param checkFun Condition function
+ * \param funcs Container of futures
+ * \param timeout Maximum duration to wait
+ * \return std::pair<int, std::optional<result_type>> Index and result (if found)
  */
 template<typename Func, typename Range>
 auto getAnyWithResultPair(Func checkFun, Range&& funcs, std::chrono::milliseconds timeout)
@@ -303,7 +306,6 @@ auto getAnyWithResultPair(Func checkFun, Range&& funcs, std::chrono::millisecond
             size_t completed = 0;
             while (completed < count && !sharedData->load())
             {
-                // Check timeout
                 if (timeout.count() > 0)
                 {
                     auto current_time = std::chrono::steady_clock::now();
@@ -328,13 +330,10 @@ auto getAnyWithResultPair(Func checkFun, Range&& funcs, std::chrono::millisecond
                             auto res = funcs[i].get();
                             (*isFinished)[i] = true;
                             ++completed;
-                            if (checkFun(res))
+                            if (checkFun(res) && !sharedData->exchange(true))
                             {
-                                if (!sharedData->exchange(true))
-                                {
-                                    resPro.set_value(std::make_pair(static_cast<int>(i), std::move(res)));
-                                    return;
-                                }
+                                resPro.set_value(std::make_pair(static_cast<int>(i), std::move(res)));
+                                return;
                             }
                         }
                         catch (...)
@@ -357,13 +356,14 @@ auto getAnyWithResultPair(Func checkFun, Range&& funcs, std::chrono::millisecond
 }
 
 /**
- * \brief Waits for all of the tasks to complete and returns the index and result.
- *
- * \tparam Range The range of tasks to wait for.
- * \tparam Args The argument types that the tasks accept.
- * \param funcs The range of tasks to wait for.
- * \param timeout The maximum time to wait for all of the tasks to complete.
- * \return A pair of the index of the task that completed and the result of the task.
+ * \brief Waits for the first task satisfying a condition in order
+ * 
+ * \tparam Func Type of condition function
+ * \tparam Range Type of future container
+ * \param checkFun Condition function
+ * \param funcs Container of futures
+ * \param timeout Maximum duration to wait
+ * \return std::pair<size_t, std::optional<result_type>> Index and result (if found)
  */
 template<typename Func, typename Range>
 auto getOrderWithResultPair(Func&& checkFun, Range&& funcs, std::chrono::milliseconds timeout)
@@ -394,7 +394,6 @@ auto getOrderWithResultPair(Func&& checkFun, Range&& funcs, std::chrono::millise
                     break;
                 }
 
-                // Check timeout
                 if (timeout.count() > 0)
                 {
                     auto current_time = std::chrono::steady_clock::now();
@@ -410,20 +409,16 @@ auto getOrderWithResultPair(Func&& checkFun, Range&& funcs, std::chrono::millise
                     if (funcs[i].wait_for(std::chrono::milliseconds(1)) == std::future_status::ready)
                     {
                         auto res = funcs[i].get();
-                        if (checkFun(res))
+                        if (checkFun(res) && !sharedData->exchange(true))
                         {
-                            if (!sharedData->exchange(true))
-                            {
-                                resPro.set_value(std::make_pair(i, std::move(res)));
-                                return;
-                            }
+                            resPro.set_value(std::make_pair(i, std::move(res)));
+                            return;
                         }
                     }
                 }
                 catch (...)
                 {
-                    // Ignore failed tasks
-                }
+                } // Ignore failed tasks
             }
 
             if (!sharedData->exchange(true))
@@ -438,29 +433,43 @@ auto getOrderWithResultPair(Func&& checkFun, Range&& funcs, std::chrono::millise
 } // namespace aux
 
 /**
- * \brief Waits for all of the tasks to complete and returns the results.
- *
- * \tparam Range The range of tasks to wait for.
- * \tparam Args The argument types that the tasks accept.
- * \param range The range of tasks to wait for.
- * \param args The arguments to pass to the tasks.
- * \return A vector of the results of the tasks.
+ * \brief Executes all tasks and collects their results
+ * 
+ * \tparam Range Type of task container
+ * \tparam Args Argument types for the tasks
+ * \param range Container of tasks
+ * \param timeout Maximum duration to wait
+ * \param args Arguments to pass to tasks
+ * \return Task<std::vector<result_type>()> Task producing the results
  */
 template<typename Range, typename... Args>
-inline auto All(const Range& range, Args&&...args) -> Task<std::vector<typename Range::value_type::return_type>()>
+inline auto All(const Range& range, std::chrono::milliseconds timeout, Args&&...args)
+    -> Task<std::vector<typename Range::value_type::return_type>()>
 {
     using result_type = typename Range::value_type::return_type;
     using vector_type = std::vector<result_type>;
 
     auto tArgs = std::make_tuple(std::forward<Args>(args)...);
     return Task<vector_type()>(
-        [range, tArgs = std::move(tArgs)]() mutable
+        [range, tArgs = std::move(tArgs), timeout]() mutable
         {
             auto funcs = aux::transform(range, tArgs);
             vector_type res;
             res.reserve(funcs.size());
+
             for (auto& fut : funcs)
             {
+                if (timeout.count() > 0)
+                {
+                    if (fut.wait_for(timeout) != std::future_status::ready)
+                    {
+                        throw std::runtime_error("Task timed out");
+                    }
+                }
+                else
+                {
+                    fut.wait();
+                }
                 res.emplace_back(fut.get());
             }
             return res;
@@ -468,30 +477,26 @@ inline auto All(const Range& range, Args&&...args) -> Task<std::vector<typename 
 }
 
 /**
- * \brief Waits for all of the tasks to complete and returns the best result.
- *
- * \tparam Range The range of tasks to wait for.
- * \tparam Args The argument types that the tasks accept.
- * \param range The range of tasks to wait for.
- * \param args The arguments to pass to the tasks.
- * \return The best result of the tasks.
+ * \brief Executes all tasks and returns the best result according to a comparator
+ * 
+ * \tparam Func Type of comparator function
+ * \tparam Range Type of task container
+ * \tparam Args Argument types for the tasks
+ * \param fn Comparator function
+ * \param range Container of tasks
+ * \param timeout Maximum duration to wait
+ * \param args Arguments to pass to tasks
+ * \return Task<result_type()> Task producing the best result
  */
-template<typename Func,
-         typename Range,
-         typename... Args,
-         std::enable_if_t<std::is_invocable_r_v<bool,
-                                                Func,
-                                                typename Range::value_type::return_type,
-                                                typename Range::value_type::return_type>,
-                          bool> = true>
-inline auto Best(Func fn, const Range& range, Args&&...args) -> Task<typename Range::value_type::return_type()>
+template<typename Func, typename Range, typename... Args>
+inline auto Best(Func fn, const Range& range, std::chrono::milliseconds timeout, Args&&...args)
+    -> Task<typename Range::value_type::return_type()>
 {
     using result_type = typename Range::value_type::return_type;
-    using vector_type = std::vector<result_type>;
 
-    return All(range, std::forward<Args>(args)...)
+    return All(range, timeout, std::forward<Args>(args)...)
         .then(
-            [fn = std::move(fn)](vector_type tmpRes)
+            [fn = std::move(fn)](std::vector<result_type> tmpRes)
             {
                 if (tmpRes.empty())
                 {
@@ -504,41 +509,18 @@ inline auto Best(Func fn, const Range& range, Args&&...args) -> Task<typename Ra
 }
 
 /**
- * \brief Waits for any of the tasks to complete and returns the best result.
- *
- * \tparam Range The range of tasks to wait for.
- * \tparam Args The argument types that the tasks accept.
- * \param range The range of tasks to wait for.
- * \param args The arguments to pass to the tasks.
- * \return The best result of the tasks.
+ * \brief Executes tasks and returns the first completed result
+ * 
+ * \tparam Range Type of task container
+ * \tparam Args Argument types for the tasks
+ * \param range Container of tasks
+ * \param timeout Maximum duration to wait
+ * \param args Arguments to pass to tasks
+ * \return Task<std::pair<size_t, result_type>()> Task producing the index and result
  */
 template<typename Range, typename... Args>
-inline auto Any(const Range& range, Args&&...args) -> Task<std::pair<size_t, typename Range::value_type::return_type>()>
-{
-    using result_type = typename Range::value_type::return_type;
-    using pair_type = std::pair<size_t, result_type>;
-
-    return Task<pair_type()>(
-        [range, tArgs = std::make_tuple(std::forward<Args>(args)...)]() mutable
-        {
-            auto funcs = aux::transform(range, tArgs);
-            return aux::getAnyResultPair(std::move(funcs), std::chrono::milliseconds(0));
-        });
-}
-
-/**
- * \brief Waits for any of the tasks to complete and returns the best result.
- *
- * \tparam Range The range of tasks to wait for.
- * \tparam Args The argument types that the tasks accept.
- * \param range The range of tasks to wait for.
- * \param args The arguments to pass to the tasks.
- * \return The best result of the tasks.
- */
-template<typename Range, typename... Args>
-inline auto Any(const Range& range,
-                std::chrono::milliseconds timeout,
-                Args&&...args) -> Task<std::pair<size_t, typename Range::value_type::return_type>()>
+inline auto Any(const Range& range, std::chrono::milliseconds timeout, Args&&...args)
+    -> Task<std::pair<size_t, typename Range::value_type::return_type>()>
 {
     using result_type = typename Range::value_type::return_type;
     using pair_type = std::pair<size_t, result_type>;
@@ -552,38 +534,16 @@ inline auto Any(const Range& range,
 }
 
 /**
- * \brief Waits for any of the tasks to complete and returns the best result.
- *
- * \tparam Range The range of tasks to wait for.
- * \tparam Args The argument types that the tasks accept.
- * \param range The range of tasks to wait for.
- * \param args The arguments to pass to the tasks.
- * \return The best result of the tasks.
- */
-template<typename Func, typename Range, typename... Args>
-inline auto AnyWith(Func fn,
-                    const Range& range,
-                    Args&&...args) -> Task<std::pair<int, std::optional<typename Range::value_type::return_type>>()>
-{
-    using result_type = typename Range::value_type::return_type;
-    using pair_type = std::pair<int, std::optional<result_type>>;
-
-    return Task<pair_type()>(
-        [range, fn = std::move(fn), tArgs = std::make_tuple(std::forward<Args>(args)...)]() mutable
-        {
-            auto funcs = aux::transform(range, tArgs);
-            return aux::getAnyWithResultPair(std::move(fn), std::move(funcs), std::chrono::milliseconds(0));
-        });
-}
-
-/**
- * \brief Waits for any of the tasks to complete and returns the best result.
- *
- * \tparam Range The range of tasks to wait for.
- * \tparam Args The argument types that the tasks accept.
- * \param range The range of tasks to wait for.
- * \param args The arguments to pass to the tasks.
- * \return The best result of the tasks.
+ * \brief Executes tasks and returns the first result satisfying a condition
+ * 
+ * \tparam Func Type of condition function
+ * \tparam Range Type of task container
+ * \tparam Args Argument types for the tasks
+ * \param fn Condition function
+ * \param range Container of tasks
+ * \param timeout Maximum duration to wait
+ * \param args Arguments to pass to tasks
+ * \return Task<std::pair<int, std::optional<result_type>>()> Task producing the index and result
  */
 template<typename Func, typename Range, typename... Args>
 inline auto AnyWith(Func fn, const Range& range, std::chrono::milliseconds timeout, Args&&...args)
@@ -601,37 +561,16 @@ inline auto AnyWith(Func fn, const Range& range, std::chrono::milliseconds timeo
 }
 
 /**
- * \brief Waits for any of the tasks to complete and returns the best result.
- *
- * \tparam Range The range of tasks to wait for.
- * \tparam Args The argument types that the tasks accept.
- * \param range The range of tasks to wait for.
- * \param args The arguments to pass to the tasks.
- * \return The best result of the tasks.
- */
-template<typename Func, typename Range, typename... Args>
-inline auto OrderWith(Func fn, const Range& range, Args&&...args)
-    -> Task<std::pair<size_t, std::optional<typename Range::value_type::return_type>>()>
-{
-    using result_type = typename Range::value_type::return_type;
-    using pair_type = std::pair<size_t, std::optional<result_type>>;
-
-    return Task<pair_type()>(
-        [range, fn = std::move(fn), tArgs = std::make_tuple(std::forward<Args>(args)...)]() mutable
-        {
-            auto funcs = aux::transform(range, tArgs);
-            return aux::getOrderWithResultPair(std::move(fn), std::move(funcs), std::chrono::milliseconds(0));
-        });
-}
-
-/**
- * \brief Waits for any of the tasks to complete and returns the best result.
- *
- * \tparam Range The range of tasks to wait for.
- * \tparam Args The argument types that the tasks accept.
- * \param range The range of tasks to wait for.
- * \param args The arguments to pass to the tasks.
- * \return The best result of the tasks.
+ * \brief Executes tasks in order and returns the first result satisfying a condition
+ * 
+ * \tparam Func Type of condition function
+ * \tparam Range Type of task container
+ * \tparam Args Argument types for the tasks
+ * \param fn Condition function
+ * \param range Container of tasks
+ * \param timeout Maximum duration to wait
+ * \param args Arguments to pass to tasks
+ * \return Task<std::pair<size_t, std::optional<result_type>>()> Task producing the index and result
  */
 template<typename Func, typename Range, typename... Args>
 inline auto OrderWith(Func fn, const Range& range, std::chrono::milliseconds timeout, Args&&...args)
@@ -649,25 +588,24 @@ inline auto OrderWith(Func fn, const Range& range, std::chrono::milliseconds tim
 }
 
 /**
- * \brief A class for managing and executing groups of tasks.
+ * \brief Manages and executes groups of tasks with various strategies
  * 
- * \tparam Ret The return type of the tasks.
- * \tparam Args The argument types that the tasks accept.
+ * \tparam Ret Return type of the tasks
+ * \tparam Args Argument types for the tasks
  */
 template<typename Ret, typename... Args>
 class Worker
 {
 public:
     using TaskType = Task<Ret(Args...)>;
-    using FutureType = std::shared_future<Ret>;
     using ConditionType = std::function<bool(Ret)>;
     using ComparatorType = std::function<bool(Ret, Ret)>;
 
     /**
-     * \brief Adds a function to the worker.
+     * \brief Adds a function to the worker
      * 
-     * \param name The name of the function.    
-     * \param fn The function to add.
+     * \param name Name identifier for the function
+     * \param fn Function to add
      */
     template<typename Fn>
     void add_function(const std::string& name, Fn&& fn)
@@ -676,11 +614,13 @@ public:
     }
 
     /**
-     * \brief Adds a member function to the worker.
+     * \brief Adds a member function to the worker
      * 
-     * \param name The name of the function.
-     * \param mem_fn The member function to add.
-     * \param obj The object to call the member function on.
+     * \tparam MemFn Member function type
+     * \tparam Obj Object type
+     * \param name Name identifier for the function
+     * \param mem_fn Pointer to member function
+     * \param obj Object instance to bind
      */
     template<typename MemFn, typename Obj>
     void add_function(const std::string& name, MemFn mem_fn, Obj&& obj)
@@ -691,10 +631,11 @@ public:
     }
 
     /**
-     * \brief Executes any of the tasks and returns the best result.
+     * \brief Executes any task and returns the first completed result
      * 
-     * \param args The arguments to pass to the tasks.
-     * \return The best result of the tasks.
+     * \param args Arguments for the tasks
+     * \param timeout Maximum duration to wait
+     * \return std::optional<std::pair<std::string, Ret>> Name and result of completed task
      */
     std::optional<std::pair<std::string, Ret>> execute_any(
         Args... args, std::chrono::steady_clock::duration timeout = std::chrono::seconds(0))
@@ -704,31 +645,28 @@ public:
             return std::nullopt;
         }
 
-        // Convert timeout to milliseconds
         auto ms_timeout = std::chrono::duration_cast<std::chrono::milliseconds>(timeout);
-
-        // Use timeout-enabled Any combinator
         auto any_task = Any(tasks_vector(), ms_timeout, std::forward<Args>(args)...);
         auto fut = any_task.run();
 
-        // Get result (no additional waiting needed as internal timeout is handled)
         try
         {
             auto [index, result] = fut.get();
             return std::make_pair(tasks_[index].first, result);
         }
-        catch (const std::runtime_error&)
+        catch (...)
         {
             return std::nullopt;
         }
     }
 
     /**
-     * \brief Executes any of the tasks that satisfy the condition and returns the best result.
+     * \brief Executes tasks and returns the first result satisfying a condition
      * 
-     * \param condition The condition to check.
-     * \param args The arguments to pass to the tasks.
-     * \return The best result of the tasks that satisfy the condition.
+     * \param condition Condition function
+     * \param args Arguments for the tasks
+     * \param timeout Maximum duration to wait
+     * \return std::optional<std::pair<std::string, Ret>> Name and result of completed task
      */
     std::optional<std::pair<std::string, Ret>> execute_any_with(
         ConditionType condition, Args... args, std::chrono::steady_clock::duration timeout = std::chrono::seconds(0))
@@ -738,10 +676,7 @@ public:
             return std::nullopt;
         }
 
-        // Convert timeout to milliseconds
         auto ms_timeout = std::chrono::duration_cast<std::chrono::milliseconds>(timeout);
-
-        // Use timeout-enabled AnyWith combinator
         auto any_with_task = AnyWith(condition, tasks_vector(), ms_timeout, std::forward<Args>(args)...);
         auto fut = any_with_task.run();
 
@@ -754,10 +689,11 @@ public:
     }
 
     /**
-     * \brief Executes all of the tasks and returns the results.
+     * \brief Executes all tasks and returns their results
      * 
-     * \param args The arguments to pass to the tasks.
-     * \return The results of the tasks.
+     * \param args Arguments for the tasks
+     * \param timeout Maximum duration to wait
+     * \return std::vector<std::pair<std::string, Ret>> Names and results of all tasks
      */
     std::vector<std::pair<std::string, Ret>> execute_all(
         Args... args, std::chrono::steady_clock::duration timeout = std::chrono::seconds(0))
@@ -768,16 +704,36 @@ public:
             return results;
         }
 
-        // Use non-blocking execution
-        return execute_all_non_blocking(std::forward<Args>(args)..., timeout);
+        auto ms_timeout = std::chrono::duration_cast<std::chrono::milliseconds>(timeout);
+        auto all_task = All(tasks_vector(), ms_timeout, std::forward<Args>(args)...);
+        auto fut = all_task.run();
+
+        try
+        {
+            auto task_results = fut.get();
+            for (size_t i = 0; i < tasks_.size(); ++i)
+            {
+                results.emplace_back(tasks_[i].first, task_results[i]);
+            }
+        }
+        catch (...)
+        {
+            // Return partial results on timeout
+            for (size_t i = 0; i < results.size(); ++i)
+            {
+                results.emplace_back(tasks_[i].first, Ret{});
+            }
+        }
+        return results;
     }
 
     /**
-     * \brief Executes all of the tasks and returns the best result.
+     * \brief Executes all tasks and returns the best result
      * 
-     * \param comparator The comparator to use to compare the results.
-     * \param args The arguments to pass to the tasks.
-     * \return The best result of the tasks.
+     * \param comparator Comparator function
+     * \param args Arguments for the tasks
+     * \param timeout Maximum duration to wait
+     * \return std::optional<std::pair<std::string, Ret>> Name and result of best task
      */
     std::optional<std::pair<std::string, Ret>> execute_best(
         ComparatorType comparator, Args... args, std::chrono::steady_clock::duration timeout = std::chrono::seconds(0))
@@ -787,29 +743,36 @@ public:
             return std::nullopt;
         }
 
-        // Get all results with timeout
-        auto all_results = execute_all(std::forward<Args>(args)..., timeout);
+        auto ms_timeout = std::chrono::duration_cast<std::chrono::milliseconds>(timeout);
+        auto best_task = Best(comparator, tasks_vector(), ms_timeout, std::forward<Args>(args)...);
+        auto fut = best_task.run();
 
-        if (all_results.empty())
+        try
+        {
+            auto result = fut.get();
+            // Find which task produced the best result
+            for (size_t i = 0; i < tasks_.size(); ++i)
+            {
+                if (tasks_[i].second.get(args...) == result)
+                {
+                    return std::make_pair(tasks_[i].first, result);
+                }
+            }
+            return std::nullopt;
+        }
+        catch (...)
         {
             return std::nullopt;
         }
-
-        // Find best result
-        auto best_it =
-            std::min_element(all_results.begin(),
-                             all_results.end(),
-                             [&comparator](const auto& a, const auto& b) { return comparator(a.second, b.second); });
-
-        return *best_it;
     }
 
     /**
-     * \brief Executes all of the tasks that satisfy the condition and returns the best result.
+     * \brief Executes tasks in order and returns the first result satisfying a condition
      * 
-     * \param condition The condition to check.
-     * \param args The arguments to pass to the tasks.
-     * \return The best result of the tasks that satisfy the condition.
+     * \param condition Condition function
+     * \param args Arguments for the tasks
+     * \param timeout Maximum duration to wait
+     * \return std::optional<std::pair<std::string, Ret>> Name and result of completed task
      */
     std::optional<std::pair<std::string, Ret>> execute_order_with(
         ConditionType condition, Args... args, std::chrono::steady_clock::duration timeout = std::chrono::seconds(0))
@@ -819,15 +782,12 @@ public:
             return std::nullopt;
         }
 
-        // Convert timeout to milliseconds
         auto ms_timeout = std::chrono::duration_cast<std::chrono::milliseconds>(timeout);
-
-        // Use timeout-enabled OrderWith combinator
         auto order_with_task = OrderWith(condition, tasks_vector(), ms_timeout, std::forward<Args>(args)...);
         auto fut = order_with_task.run();
 
         auto [index, result_opt] = fut.get();
-        if (result_opt)
+        if (result_opt && index < tasks_.size())
         {
             return std::make_pair(tasks_[index].first, *result_opt);
         }
@@ -835,72 +795,6 @@ public:
     }
 
 private:
-    /**
-     * \brief Executes all of the tasks and returns the results.
-     * \details Non-blocking execute_all implementation with precise timeout
-     * 
-     * \param args The arguments to pass to the tasks.
-     * \return The results of the tasks.
-     */
-    std::vector<std::pair<std::string, Ret>> execute_all_non_blocking(Args... args,
-                                                                      std::chrono::steady_clock::duration timeout)
-    {
-        std::vector<std::pair<std::string, Ret>> results;
-        results.reserve(tasks_.size());
-
-        auto start_time = std::chrono::steady_clock::now();
-
-        for (size_t i = 0; i < tasks_.size(); ++i)
-        {
-            // Check if timeout has already been exceeded
-            if (timeout.count() > 0)
-            {
-                auto elapsed = std::chrono::steady_clock::now() - start_time;
-                if (elapsed >= timeout)
-                {
-                    // Timeout reached, return empty result
-                    return {};
-                }
-            }
-
-            // Start the task
-            auto fut = tasks_[i].second.run(args...);
-
-            // Calculate remaining timeout
-            auto remaining = timeout - (std::chrono::steady_clock::now() - start_time);
-
-            // Wait for the task with timeout
-            if (timeout.count() > 0)
-            {
-                if (fut.wait_for(remaining) != std::future_status::ready)
-                {
-                    // Timeout occurred, return empty result
-                    return {};
-                }
-            }
-            else
-            {
-                fut.wait();
-            }
-
-            try
-            {
-                results.emplace_back(tasks_[i].first, fut.get());
-            }
-            catch (...)
-            {
-                // Handle exception (log or skip)
-            }
-        }
-
-        return results;
-    }
-
-    /**
-     * \brief Returns the vector of tasks.
-     * 
-     * \return The vector of tasks.
-     */
     std::vector<TaskType> tasks_vector() const
     {
         std::vector<TaskType> tasks;
