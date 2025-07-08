@@ -39,7 +39,7 @@ if (MSVC)
     ${PROJECT_NAME}
     INTERFACE
     $<$<CONFIG:Release>:
-    /LTCG:incremental
+    /LTCG
     /OPT:REF
     /OPT:ICF
     >)
