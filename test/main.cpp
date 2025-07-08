@@ -6,18 +6,18 @@
 
 using namespace std::chrono_literals;
 
-double fast_task(int x)
+inline double fast_task(int x)
 {
     return std::pow(x, 2);
 }
 
-double slow_task(int x)
+inline double slow_task(int x)
 {
     std::this_thread::sleep_for(200ms);
     return std::pow(x, 3);
 }
 
-double conditional_task(int x)
+inline double conditional_task(int x)
 {
     if (x % 2 == 0)
     {

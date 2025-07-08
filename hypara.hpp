@@ -332,7 +332,15 @@ auto getAnyWithResultPair(Func checkFun, Range&& funcs, std::chrono::millisecond
                             ++completed;
                             if (checkFun(res) && !sharedData->exchange(true))
                             {
-                                resPro.set_value(std::make_pair(static_cast<int>(i), std::move(res)));
+                                if (i <= static_cast<size_t>(std::numeric_limits<int>::max()))
+                                {
+                                    resPro.set_value(std::make_pair(static_cast<int>(i), std::move(res)));
+                                }
+                                else
+                                {
+                                    resPro.set_exception(
+                                        std::make_exception_ptr(std::runtime_error("Index out of int range")));
+                                }
                                 return;
                             }
                         }
@@ -443,8 +451,9 @@ auto getOrderWithResultPair(Func&& checkFun, Range&& funcs, std::chrono::millise
  * \return Task<std::vector<result_type>()> Task producing the results
  */
 template<typename Range, typename... Args>
-inline auto All(const Range& range, std::chrono::milliseconds timeout, Args&&...args)
-    -> Task<std::vector<typename Range::value_type::return_type>()>
+inline auto All(const Range& range,
+                std::chrono::milliseconds timeout,
+                Args&&...args) -> Task<std::vector<typename Range::value_type::return_type>()>
 {
     using result_type = typename Range::value_type::return_type;
     using vector_type = std::vector<result_type>;
@@ -519,8 +528,9 @@ inline auto Best(Func fn, const Range& range, std::chrono::milliseconds timeout,
  * \return Task<std::pair<size_t, result_type>()> Task producing the index and result
  */
 template<typename Range, typename... Args>
-inline auto Any(const Range& range, std::chrono::milliseconds timeout, Args&&...args)
-    -> Task<std::pair<size_t, typename Range::value_type::return_type>()>
+inline auto Any(const Range& range,
+                std::chrono::milliseconds timeout,
+                Args&&...args) -> Task<std::pair<size_t, typename Range::value_type::return_type>()>
 {
     using result_type = typename Range::value_type::return_type;
     using pair_type = std::pair<size_t, result_type>;
@@ -681,9 +691,9 @@ public:
         auto fut = any_with_task.run();
 
         auto [index, result_opt] = fut.get();
-        if (index >= 0 && result_opt)
+        if (index >= 0 && static_cast<size_t>(index) < tasks_.size() && result_opt)
         {
-            return std::make_pair(tasks_[index].first, *result_opt);
+            return std::make_pair(tasks_[static_cast<size_t>(index)].first, *result_opt);
         }
         return std::nullopt;
     }
