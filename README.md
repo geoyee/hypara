@@ -1,6 +1,6 @@
 # hypara
 
-[![CMake on multiple platforms](https://github.com/geoyee/hypara/actions/workflows/cmake-multi-platform.yml/badge.svg?branch=develop)](https://github.com/geoyee/hypara/actions/workflows/cmake-multi-platform.yml)
+[![CMake on multiple platforms](https://github.com/geoyee/hypara/actions/workflows/cmake-multi-platform.yml/badge.svg?branch=main)](https://github.com/geoyee/hypara/actions/workflows/cmake-multi-platform.yml)
 ![Static Badge](https://img.shields.io/badge/C++-17-red) ![Static Badge](https://img.shields.io/badge/License-Apache2.0-blue)
 
 基于《深入应用 C++11: 代码优化与工程级应用》中 `TaskCpp`的 `Task`和 `When_All_Any`进行修改，以满足某些需求。
