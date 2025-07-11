@@ -402,6 +402,7 @@ auto getOrderWithResultPair(Func&& checkFun, Range&& funcs, std::chrono::millise
                     break;
                 }
 
+                std::chrono::milliseconds remaining_time(0);
                 if (timeout.count() > 0)
                 {
                     auto current_time = std::chrono::steady_clock::now();
@@ -410,6 +411,7 @@ auto getOrderWithResultPair(Func&& checkFun, Range&& funcs, std::chrono::millise
                     {
                         break;
                     }
+                    remaining_time = timeout - elapsed;
                 }
 
                 try
@@ -451,9 +453,8 @@ auto getOrderWithResultPair(Func&& checkFun, Range&& funcs, std::chrono::millise
  * \return Task<std::vector<result_type>()> Task producing the results
  */
 template<typename Range, typename... Args>
-inline auto All(const Range& range,
-                std::chrono::milliseconds timeout,
-                Args&&...args) -> Task<std::vector<typename Range::value_type::return_type>()>
+inline auto All(const Range& range, std::chrono::milliseconds timeout, Args&&...args)
+    -> Task<std::vector<typename Range::value_type::return_type>()>
 {
     using result_type = typename Range::value_type::return_type;
     using vector_type = std::vector<result_type>;
@@ -528,9 +529,8 @@ inline auto Best(Func fn, const Range& range, std::chrono::milliseconds timeout,
  * \return Task<std::pair<size_t, result_type>()> Task producing the index and result
  */
 template<typename Range, typename... Args>
-inline auto Any(const Range& range,
-                std::chrono::milliseconds timeout,
-                Args&&...args) -> Task<std::pair<size_t, typename Range::value_type::return_type>()>
+inline auto Any(const Range& range, std::chrono::milliseconds timeout, Args&&...args)
+    -> Task<std::pair<size_t, typename Range::value_type::return_type>()>
 {
     using result_type = typename Range::value_type::return_type;
     using pair_type = std::pair<size_t, result_type>;
