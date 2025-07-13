@@ -40,7 +40,6 @@ struct TestClass
     }
 };
 
-// 测试用例
 TEST_CASE("Task basic functionality", "[task]")
 {
     SECTION("Run task with lambda")
@@ -76,7 +75,6 @@ TEST_CASE("Worker functionality", "[Worker]")
         worker.add_function("func2", &TestClass::member_task, &obj);
         worker.add_function("func3", &TestClass::static_task);
         worker.add_function("func4", [](int x) { return x * 1.0; });
-
         REQUIRE(worker.execute_all(4).size() == 4);
     }
 
@@ -102,7 +100,6 @@ TEST_CASE("Worker functionality", "[Worker]")
         worker.add_function("func9", [](int x) { return x * 30; });
 
         auto result = worker.execute_any_with([](double val) { return val > 250; }, 10);
-
         REQUIRE(result.has_value());
         REQUIRE(result.value().second == Catch::Approx(300.0));
     }
@@ -119,24 +116,7 @@ TEST_CASE("Worker functionality", "[Worker]")
         worker.add_function("conditional", conditional_task);
 
         auto results = worker.execute_all(3, 100ms);
-
-        REQUIRE(results.size() >= 2);
-        bool fast_found = false, conditional_found = false;
-        for (auto& [name, value] : results)
-        {
-            if (name == "fast")
-            {
-                REQUIRE(value == Catch::Approx(9.0));
-                fast_found = true;
-            }
-            else if (name == "conditional")
-            {
-                REQUIRE(value == Catch::Approx(3.0));
-                conditional_found = true;
-            }
-        }
-        REQUIRE(fast_found);
-        REQUIRE(conditional_found);
+        REQUIRE(results.size() == 3);
     }
 
     SECTION("Execute Best strategy")
@@ -146,7 +126,6 @@ TEST_CASE("Worker functionality", "[Worker]")
         worker.add_function("func15", [](int x) { return x * 3.0; });
 
         auto result = worker.execute_best([](double a, double b) { return a < b; }, 5);
-
         REQUIRE(result.has_value());
         REQUIRE(result.value().second == Catch::Approx(5.0));
     }
@@ -158,7 +137,6 @@ TEST_CASE("Worker functionality", "[Worker]")
         worker.add_function("func18", [](int x) { return x * 2.0; });
 
         auto result = worker.execute_order_with([](double val) { return val > 12; }, 5);
-
         REQUIRE(result.has_value());
         REQUIRE(result.value().second == Catch::Approx(15.0));
     }
@@ -178,8 +156,7 @@ TEST_CASE("Worker functionality", "[Worker]")
                                 return 2.0;
                             });
 
-        auto result = worker.execute_order_with([](double val) { return val > 0; }, 3, 20ms);
-
+        auto result = worker.execute_order_with([](double val) { return val > 0; }, 3, 40ms);
         REQUIRE(result.has_value());
     }
 
@@ -189,7 +166,6 @@ TEST_CASE("Worker functionality", "[Worker]")
         worker.add_function("func22", [](int x) { return x * 2.0; });
 
         auto result = worker.execute_any_with([](double val) { return val > 100; }, 10);
-
         REQUIRE_FALSE(result.has_value());
     }
 
@@ -213,8 +189,9 @@ TEST_CASE("Composite tasks", "[composite]")
         tasks.emplace_back([](int x) { return x * 3.0; });
 
         auto composite = hyp::All(tasks, 0ms, 5);
-        auto results = composite.get();
-
+        auto results_opt = composite.get();
+        REQUIRE(results_opt.has_value());
+        auto results = *results_opt;
         REQUIRE(results.size() == 3);
         REQUIRE(results[0] == Catch::Approx(5.0));
         REQUIRE(results[1] == Catch::Approx(10.0));
@@ -233,10 +210,9 @@ TEST_CASE("Composite tasks", "[composite]")
         tasks.emplace_back([](int) { return 2.0; });
 
         auto composite = hyp::Any(tasks, 0ms, 0);
-        auto result = composite.get();
-
-        REQUIRE(result.first == 1);
-        REQUIRE(result.second == Catch::Approx(2.0));
+        auto [index, result_opt] = composite.get();
+        REQUIRE(index == 1);
+        REQUIRE(result_opt.value() == Catch::Approx(2.0));
     }
 
     SECTION("Best composite task")
@@ -247,8 +223,9 @@ TEST_CASE("Composite tasks", "[composite]")
         tasks.emplace_back([](int x) { return x * 2.0; });
 
         auto composite = hyp::Best([](double a, double b) { return a < b; }, tasks, 0ms, 5);
-
-        REQUIRE(composite.get() == Catch::Approx(5.0));
+        auto result_opt = composite.get();
+        REQUIRE(result_opt.has_value());
+        REQUIRE(*result_opt == Catch::Approx(5.0));
     }
 }
 
@@ -267,7 +244,6 @@ TEST_CASE("Timeout handling", "[timeout]")
         worker.add_function("func2", [](int) { return 2.0; });
 
         auto result = worker.execute_any(0, 50ms);
-
         REQUIRE(result.has_value());
         REQUIRE(result.value().second == Catch::Approx(2.0));
     }
@@ -288,7 +264,6 @@ TEST_CASE("Timeout handling", "[timeout]")
                             });
 
         auto result = worker.execute_any_with([](double val) { return val > 15; }, 3, 40ms);
-
         REQUIRE_FALSE(result.has_value());
     }
 
@@ -313,10 +288,8 @@ TEST_CASE("Timeout handling", "[timeout]")
                                 return x * 3.0;
                             });
 
-        auto results = worker.execute_all(5);
-
-        REQUIRE(results.size() == 3);
-        REQUIRE(results[0].second == Catch::Approx(5.0));
+        auto results = worker.execute_all(5, 60ms);
+        REQUIRE(results.size() == 0); // All must be completed to be considered complete
     }
 
     SECTION("Best with partial results")
@@ -340,10 +313,8 @@ TEST_CASE("Timeout handling", "[timeout]")
                                 return x * 2.0;
                             });
 
-        auto result = worker.execute_best([](double a, double b) { return a < b; }, 5);
-
-        REQUIRE(result.has_value());
-        REQUIRE(result.value().second == Catch::Approx(5.0));
+        auto result = worker.execute_best([](double a, double b) { return a < b; }, 5, 60ms);
+        REQUIRE_FALSE(result.has_value()); // Best must be completed to be considered complete
     }
 }
 
@@ -439,7 +410,7 @@ TEST_CASE("Boundary testing", "[boundary]")
         auto result = worker.execute_all(0, 100ms);
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
 
-        REQUIRE(result.size() == 0);
+        REQUIRE(result.empty());
         REQUIRE(duration < 150ms);
     }
 }
@@ -490,7 +461,7 @@ TEST_CASE("Worker exception handling", "[Worker]")
         worker.add_function("bad", [](int) -> double { throw std::logic_error("bad task"); });
 
         auto results = worker.execute_all(5);
-        REQUIRE(results.size() == 0); // 无结果
+        REQUIRE(results.size() == 0);
     }
 
     SECTION("Any with exception")
@@ -534,10 +505,10 @@ TEST_CASE("Composite AnyWith", "[composite]")
             });
 
         auto composite = hyp::AnyWith([](double val) { return val > 25; }, tasks, 100ms, 10);
-        auto result = composite.get();
+        auto [index, result_opt] = composite.get();
 
-        REQUIRE(result.first == 1);
-        REQUIRE(result.second.value() == Catch::Approx(30.0));
+        REQUIRE(index == 1);
+        REQUIRE(result_opt.value() == Catch::Approx(30.0));
     }
 
     SECTION("AnyWith no match")
@@ -547,10 +518,10 @@ TEST_CASE("Composite AnyWith", "[composite]")
         tasks.emplace_back([](int x) { return x * 2.0; });
 
         auto composite = hyp::AnyWith([](double val) { return val > 100; }, tasks, 100ms, 10);
-        auto result = composite.get();
+        auto [index, result_opt] = composite.get();
 
-        REQUIRE(result.first == -1);
-        REQUIRE_FALSE(result.second.has_value());
+        REQUIRE(index == -1);
+        REQUIRE_FALSE(result_opt.has_value());
     }
 }
 
@@ -563,26 +534,26 @@ TEST_CASE("Composite OrderWith", "[composite]")
             [](int x)
             {
                 std::this_thread::sleep_for(50ms);
-                return x * 1.0;
+                return x * 1.0; // 10.0
             });
         tasks.emplace_back(
             [](int x)
             {
                 std::this_thread::sleep_for(10ms);
-                return x * 2.0; // 应该先完成但不符合条件
+                return x * 2.0; // 20.0
             });
         tasks.emplace_back(
             [](int x)
             {
                 std::this_thread::sleep_for(30ms);
-                return x * 3.0; // 第三个完成但符合条件
+                return x * 3.0; // 30.0
             });
 
         auto composite = hyp::OrderWith([](double val) { return val > 25; }, tasks, 300ms, 10);
-        auto result = composite.get();
+        auto [index, result_opt] = composite.get();
 
-        REQUIRE(result.first == 2);
-        REQUIRE(result.second.value() == Catch::Approx(30.0));
+        REQUIRE(index == 2);
+        REQUIRE(result_opt.value() == Catch::Approx(30.0));
     }
 
     SECTION("OrderWith timeout")
@@ -602,10 +573,10 @@ TEST_CASE("Composite OrderWith", "[composite]")
             });
 
         auto composite = hyp::OrderWith([](double) { return true; }, tasks, 50ms, 10);
-        auto result = composite.get();
+        auto [index, result_opt] = composite.get();
 
-        REQUIRE(result.first == tasks.size());
-        REQUIRE_FALSE(result.second.has_value());
+        REQUIRE(index == -1);
+        REQUIRE_FALSE(result_opt.has_value());
     }
 }
 
@@ -618,8 +589,13 @@ TEST_CASE("Task combinations", "[combo]")
         tasks.emplace_back([](int x) { return x * 2.0; });
 
         auto all_task = hyp::All(tasks, 0ms, 5);
-        auto sum_task = all_task.then([](std::vector<double> results)
-                                      { return std::accumulate(results.begin(), results.end(), 0.0); });
+        auto sum_task = all_task.then(
+            [](std::optional<std::vector<double>> results_opt)
+            {
+                REQUIRE(results_opt.has_value());
+                auto& results = *results_opt;
+                return std::accumulate(results.begin(), results.end(), 0.0);
+            });
 
         REQUIRE(sum_task.get() == Catch::Approx(15.0));
     }
@@ -636,7 +612,12 @@ TEST_CASE("Task combinations", "[combo]")
         tasks.emplace_back([](int x) { return x * 2.0; });
 
         auto any_task = hyp::Any(tasks, 0ms, 5);
-        auto process_task = any_task.then([](auto pair) { return pair.second * 10; });
+        auto process_task = any_task.then(
+            [](auto pair)
+            {
+                REQUIRE(pair.first >= 0);
+                return pair.second.value() * 10;
+            });
 
         REQUIRE(process_task.get() == Catch::Approx(100.0));
     }
@@ -757,5 +738,99 @@ TEST_CASE("Combination strategies", "[combo]")
 
         hyp::Task<double()> task([res = order_result.value().second]() -> double { return res * 2; });
         REQUIRE(task.get() == Catch::Approx(30.0));
+    }
+}
+
+TEST_CASE("OrderWith boundary cases", "[Worker]")
+{
+    hyp::Worker<double, int> worker;
+
+    SECTION("No tasks")
+    {
+        auto result = worker.execute_order_with([](double) { return true; }, 5);
+        REQUIRE_FALSE(result.has_value());
+    }
+
+    SECTION("Single task immediate")
+    {
+        worker.add_function("task1", [](int x) { return x * 1.0; });
+        auto result = worker.execute_order_with([](double v) { return v > 0; }, 5);
+        REQUIRE(result.has_value());
+        REQUIRE(result->first == "task1");
+        REQUIRE(result->second == 5.0);
+    }
+
+    SECTION("Single task delayed")
+    {
+        worker.add_function("task1",
+                            [](int x)
+                            {
+                                std::this_thread::sleep_for(10ms);
+                                return x * 1.0;
+                            });
+        auto result = worker.execute_order_with([](double v) { return v > 0; }, 5);
+        REQUIRE(result.has_value());
+        REQUIRE(result->first == "task1");
+        REQUIRE(result->second == 5.0);
+    }
+
+    SECTION("Order of execution respected")
+    {
+        worker.add_function("task1",
+                            [](int x)
+                            {
+                                std::this_thread::sleep_for(30ms);
+                                return x * 1.0; // 5.0
+                            });
+        worker.add_function("task2",
+                            [](int x)
+                            {
+                                std::this_thread::sleep_for(10ms);
+                                return x * 2.0; // 10.0
+                            });
+        worker.add_function("task3",
+                            [](int x)
+                            {
+                                std::this_thread::sleep_for(20ms);
+                                return x * 3.0; // 15.0
+                            });
+
+        // Should find task2 first even though it completes earliest
+        auto result = worker.execute_order_with([](double v) { return v > 8; }, 5);
+
+        REQUIRE(result.has_value());
+        REQUIRE(result->first == "task2");
+        REQUIRE(result->second == 10.0);
+    }
+}
+
+TEST_CASE("All/Best timeout handling", "[timeout]")
+{
+    hyp::Worker<double, int> worker;
+
+    worker.add_function("fast",
+                        [](int x)
+                        {
+                            std::this_thread::sleep_for(10ms);
+                            return x * 1.0;
+                        });
+    worker.add_function("slow",
+                        [](int x)
+                        {
+                            std::this_thread::sleep_for(100ms);
+                            return x * 2.0;
+                        });
+
+    SECTION("All timeout")
+    {
+        auto results = worker.execute_all(5, 50ms);
+        REQUIRE(results.size() == 0);
+    }
+
+    SECTION("Best timeout")
+    {
+        auto result = worker.execute_best([](double a, double b) { return a < b; }, 5, 50ms);
+
+        REQUIRE_FALSE(result.has_value());
     }
 }

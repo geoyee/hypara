@@ -182,14 +182,14 @@ auto transform(const Range& range, const std::tuple<Args...>& tArgs)
  * \tparam Range Type of future container
  * \param funcs Container of futures
  * \param timeout Maximum duration to wait
- * \return std::pair<size_t, result_type> Index and result of the completed task
+ * \return std::pair<int, std::optional<result_type>> Index and result of the completed task (-1 if none)
  */
 template<typename Range>
 auto getAnyResultPair(Range&& funcs, std::chrono::milliseconds timeout)
-    -> std::pair<size_t, range_trait_t<typename std::decay_t<decltype(*std::begin(funcs))>>>
+    -> std::pair<int, std::optional<range_trait_t<typename std::decay_t<decltype(*std::begin(funcs))>>>>
 {
     using result_type = range_trait_t<typename std::decay_t<decltype(*std::begin(funcs))>>;
-    using result_pair = std::pair<size_t, result_type>;
+    using result_pair = std::pair<int, std::optional<result_type>>;
 
     std::promise<result_pair> resPro;
     auto resfut = resPro.get_future();
@@ -241,7 +241,7 @@ auto getAnyResultPair(Range&& funcs, std::chrono::milliseconds timeout)
                             ++completed;
                             if (!sharedData->exchange(true))
                             {
-                                resPro.set_value(std::make_pair(i, std::move(res)));
+                                resPro.set_value(std::make_pair(static_cast<int>(i), std::move(res)));
                                 return;
                             }
                         }
@@ -256,7 +256,7 @@ auto getAnyResultPair(Range&& funcs, std::chrono::milliseconds timeout)
 
             if (!sharedData->exchange(true))
             {
-                resPro.set_exception(std::make_exception_ptr(std::runtime_error("All tasks failed or timed out")));
+                resPro.set_value(std::make_pair(-1, std::optional<result_type>()));
             }
         });
 
@@ -272,7 +272,7 @@ auto getAnyResultPair(Range&& funcs, std::chrono::milliseconds timeout)
  * \param checkFun Condition function
  * \param funcs Container of futures
  * \param timeout Maximum duration to wait
- * \return std::pair<int, std::optional<result_type>> Index and result (if found)
+ * \return std::pair<int, std::optional<result_type>> Index and result (if found, -1 if none)
  */
 template<typename Func, typename Range>
 auto getAnyWithResultPair(Func checkFun, Range&& funcs, std::chrono::milliseconds timeout)
@@ -332,15 +332,7 @@ auto getAnyWithResultPair(Func checkFun, Range&& funcs, std::chrono::millisecond
                             ++completed;
                             if (checkFun(res) && !sharedData->exchange(true))
                             {
-                                if (i <= static_cast<size_t>(std::numeric_limits<int>::max()))
-                                {
-                                    resPro.set_value(std::make_pair(static_cast<int>(i), std::move(res)));
-                                }
-                                else
-                                {
-                                    resPro.set_exception(
-                                        std::make_exception_ptr(std::runtime_error("Index out of int range")));
-                                }
+                                resPro.set_value(std::make_pair(static_cast<int>(i), std::move(res)));
                                 return;
                             }
                         }
@@ -355,7 +347,7 @@ auto getAnyWithResultPair(Func checkFun, Range&& funcs, std::chrono::millisecond
 
             if (!sharedData->exchange(true))
             {
-                resPro.set_value(std::make_pair(-1, std::nullopt));
+                resPro.set_value(std::make_pair(-1, std::optional<result_type>()));
             }
         });
 
@@ -371,74 +363,59 @@ auto getAnyWithResultPair(Func checkFun, Range&& funcs, std::chrono::millisecond
  * \param checkFun Condition function
  * \param funcs Container of futures
  * \param timeout Maximum duration to wait
- * \return std::pair<size_t, std::optional<result_type>> Index and result (if found)
+ * \return std::pair<int, std::optional<result_type>> Index and result (if found, -1 if none)
  */
 template<typename Func, typename Range>
 auto getOrderWithResultPair(Func&& checkFun, Range&& funcs, std::chrono::milliseconds timeout)
-    -> std::pair<size_t, std::optional<range_trait_t<typename std::decay_t<decltype(*std::begin(funcs))>>>>
+    -> std::pair<int, std::optional<range_trait_t<typename std::decay_t<decltype(*std::begin(funcs))>>>>
 {
     using result_type = range_trait_t<typename std::decay_t<decltype(*std::begin(funcs))>>;
-    using result_pair = std::pair<size_t, std::optional<result_type>>;
-
-    std::promise<result_pair> resPro;
-    auto resfut = resPro.get_future();
-    auto sharedData = std::make_shared<std::atomic<bool>>(false);
-
     auto start_time = std::chrono::steady_clock::now();
+    const int count = static_cast<int>(funcs.size());
 
-    std::thread monitor(
-        [funcs = std::forward<Range>(funcs),
-         checkFun = std::forward<Func>(checkFun),
-         resPro = std::move(resPro),
-         sharedData,
-         timeout,
-         start_time]() mutable
+    for (int i = 0; i < count; ++i)
+    {
+        // Calculate remaining time
+        std::chrono::milliseconds remaining_time = std::chrono::milliseconds::max();
+        if (timeout.count() > 0)
         {
-            const size_t count = funcs.size();
-            for (size_t i = 0; i < count; ++i)
+            auto current_time = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time);
+            if (elapsed >= timeout)
             {
-                if (sharedData->load())
-                {
-                    break;
-                }
-
-                std::chrono::milliseconds remaining_time(0);
-                if (timeout.count() > 0)
-                {
-                    auto current_time = std::chrono::steady_clock::now();
-                    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time);
-                    if (elapsed >= timeout)
-                    {
-                        break;
-                    }
-                    remaining_time = timeout - elapsed;
-                }
-
-                try
-                {
-                    if (funcs[i].wait_for(std::chrono::milliseconds(1)) == std::future_status::ready)
-                    {
-                        auto res = funcs[i].get();
-                        if (checkFun(res) && !sharedData->exchange(true))
-                        {
-                            resPro.set_value(std::make_pair(i, std::move(res)));
-                            return;
-                        }
-                    }
-                }
-                catch (...)
-                {
-                } // Ignore failed tasks
+                return {-1, std::optional<result_type>()};
             }
+            remaining_time = timeout - elapsed;
+        }
 
-            if (!sharedData->exchange(true))
+        // Wait for current task with timeout
+        auto status = funcs[i].wait_for(remaining_time);
+
+        if (status == std::future_status::timeout)
+        {
+            // Skip to next task on timeout
+            continue;
+        }
+
+        // Process result if ready
+        if (status == std::future_status::ready)
+        {
+            try
             {
-                resPro.set_value(std::make_pair(count, std::nullopt));
+                auto res = funcs[i].get();
+                if (checkFun(res))
+                {
+                    return {i, std::move(res)};
+                }
             }
-        });
+            catch (...)
+            {
+                // Continue to next task on exception
+            }
+        }
+    }
 
-    monitor.detach();
-    return resfut.get();
+    return {-1, std::optional<result_type>()};
 }
 } // namespace aux
 
@@ -450,39 +427,58 @@ auto getOrderWithResultPair(Func&& checkFun, Range&& funcs, std::chrono::millise
  * \param range Container of tasks
  * \param timeout Maximum duration to wait
  * \param args Arguments to pass to tasks
- * \return Task<std::vector<result_type>()> Task producing the results
+ * \return Task<std::optional<std::vector<result_type>>()> Task producing the results (nullopt on failure)
  */
 template<typename Range, typename... Args>
-inline auto All(const Range& range, std::chrono::milliseconds timeout, Args&&...args)
-    -> Task<std::vector<typename Range::value_type::return_type>()>
+inline auto All(const Range& range,
+                std::chrono::milliseconds timeout,
+                Args&&...args) -> Task<std::optional<std::vector<typename Range::value_type::return_type>>()>
 {
     using result_type = typename Range::value_type::return_type;
     using vector_type = std::vector<result_type>;
 
     auto tArgs = std::make_tuple(std::forward<Args>(args)...);
-    return Task<vector_type()>(
+    return Task<std::optional<vector_type>()>(
         [range, tArgs = std::move(tArgs), timeout]() mutable
         {
-            auto funcs = aux::transform(range, tArgs);
-            vector_type res;
-            res.reserve(funcs.size());
-
-            for (auto& fut : funcs)
+            try
             {
-                if (timeout.count() > 0)
+                auto funcs = aux::transform(range, tArgs);
+                vector_type res;
+                res.reserve(funcs.size());
+
+                auto start_time = std::chrono::steady_clock::now();
+
+                for (auto& fut : funcs)
                 {
-                    if (fut.wait_for(timeout) != std::future_status::ready)
+                    // Calculate remaining time for this task
+                    std::chrono::milliseconds remaining_time = std::chrono::milliseconds::max();
+                    if (timeout.count() > 0)
                     {
-                        throw std::runtime_error("Task timed out");
+                        auto current_time = std::chrono::steady_clock::now();
+                        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time);
+                        if (elapsed >= timeout)
+                        {
+                            return std::optional<vector_type>(std::nullopt);
+                        }
+                        remaining_time = timeout - elapsed;
                     }
+
+                    // Wait for this task to complete
+                    if (fut.wait_for(remaining_time) != std::future_status::ready)
+                    {
+                        return std::optional<vector_type>(std::nullopt);
+                    }
+
+                    // Get result
+                    res.emplace_back(fut.get());
                 }
-                else
-                {
-                    fut.wait();
-                }
-                res.emplace_back(fut.get());
+                return std::optional<vector_type>(std::move(res));
             }
-            return res;
+            catch (...)
+            {
+                return std::optional<vector_type>(std::nullopt);
+            }
         });
 }
 
@@ -496,25 +492,26 @@ inline auto All(const Range& range, std::chrono::milliseconds timeout, Args&&...
  * \param range Container of tasks
  * \param timeout Maximum duration to wait
  * \param args Arguments to pass to tasks
- * \return Task<result_type()> Task producing the best result
+ * \return Task<std::optional<result_type>()> Task producing the best result (nullopt on failure)
  */
 template<typename Func, typename Range, typename... Args>
 inline auto Best(Func fn, const Range& range, std::chrono::milliseconds timeout, Args&&...args)
-    -> Task<typename Range::value_type::return_type()>
+    -> Task<std::optional<typename Range::value_type::return_type>()>
 {
     using result_type = typename Range::value_type::return_type;
 
     return All(range, timeout, std::forward<Args>(args)...)
         .then(
-            [fn = std::move(fn)](std::vector<result_type> tmpRes)
+            [fn = std::move(fn)](std::optional<std::vector<result_type>> tmpRes)
             {
-                if (tmpRes.empty())
+                if (!tmpRes || tmpRes->empty())
                 {
-                    throw std::runtime_error("No results to compare");
+                    return std::optional<result_type>(std::nullopt);
                 }
-                return *std::min_element(tmpRes.begin(),
-                                         tmpRes.end(),
-                                         [&fn](const result_type& a, const result_type& b) { return fn(a, b); });
+                auto best = std::min_element(tmpRes->begin(),
+                                             tmpRes->end(),
+                                             [&fn](const result_type& a, const result_type& b) { return fn(a, b); });
+                return std::optional<result_type>(std::move(*best));
             });
 }
 
@@ -526,20 +523,28 @@ inline auto Best(Func fn, const Range& range, std::chrono::milliseconds timeout,
  * \param range Container of tasks
  * \param timeout Maximum duration to wait
  * \param args Arguments to pass to tasks
- * \return Task<std::pair<size_t, result_type>()> Task producing the index and result
+ * \return Task<std::pair<int, std::optional<result_type>>()> Task producing index and result (-1 on failure)
  */
 template<typename Range, typename... Args>
-inline auto Any(const Range& range, std::chrono::milliseconds timeout, Args&&...args)
-    -> Task<std::pair<size_t, typename Range::value_type::return_type>()>
+inline auto Any(const Range& range,
+                std::chrono::milliseconds timeout,
+                Args&&...args) -> Task<std::pair<int, std::optional<typename Range::value_type::return_type>>()>
 {
     using result_type = typename Range::value_type::return_type;
-    using pair_type = std::pair<size_t, result_type>;
+    using pair_type = std::pair<int, std::optional<result_type>>;
 
     return Task<pair_type()>(
         [range, timeout, tArgs = std::make_tuple(std::forward<Args>(args)...)]() mutable
         {
-            auto funcs = aux::transform(range, tArgs);
-            return aux::getAnyResultPair(std::move(funcs), timeout);
+            try
+            {
+                auto funcs = aux::transform(range, tArgs);
+                return aux::getAnyResultPair(std::move(funcs), timeout);
+            }
+            catch (...)
+            {
+                return std::make_pair(-1, std::optional<result_type>());
+            }
         });
 }
 
@@ -553,7 +558,7 @@ inline auto Any(const Range& range, std::chrono::milliseconds timeout, Args&&...
  * \param range Container of tasks
  * \param timeout Maximum duration to wait
  * \param args Arguments to pass to tasks
- * \return Task<std::pair<int, std::optional<result_type>>()> Task producing the index and result
+ * \return Task<std::pair<int, std::optional<result_type>>()> Task producing index and result (-1 on failure)
  */
 template<typename Func, typename Range, typename... Args>
 inline auto AnyWith(Func fn, const Range& range, std::chrono::milliseconds timeout, Args&&...args)
@@ -565,8 +570,15 @@ inline auto AnyWith(Func fn, const Range& range, std::chrono::milliseconds timeo
     return Task<pair_type()>(
         [range, fn = std::move(fn), timeout, tArgs = std::make_tuple(std::forward<Args>(args)...)]() mutable
         {
-            auto funcs = aux::transform(range, tArgs);
-            return aux::getAnyWithResultPair(std::move(fn), std::move(funcs), timeout);
+            try
+            {
+                auto funcs = aux::transform(range, tArgs);
+                return aux::getAnyWithResultPair(std::move(fn), std::move(funcs), timeout);
+            }
+            catch (...)
+            {
+                return std::make_pair(-1, std::optional<result_type>());
+            }
         });
 }
 
@@ -580,20 +592,27 @@ inline auto AnyWith(Func fn, const Range& range, std::chrono::milliseconds timeo
  * \param range Container of tasks
  * \param timeout Maximum duration to wait
  * \param args Arguments to pass to tasks
- * \return Task<std::pair<size_t, std::optional<result_type>>()> Task producing the index and result
+ * \return Task<std::pair<int, std::optional<result_type>>()> Task producing index and result (-1 on failure)
  */
 template<typename Func, typename Range, typename... Args>
 inline auto OrderWith(Func fn, const Range& range, std::chrono::milliseconds timeout, Args&&...args)
-    -> Task<std::pair<size_t, std::optional<typename Range::value_type::return_type>>()>
+    -> Task<std::pair<int, std::optional<typename Range::value_type::return_type>>()>
 {
     using result_type = typename Range::value_type::return_type;
-    using pair_type = std::pair<size_t, std::optional<result_type>>;
+    using pair_type = std::pair<int, std::optional<result_type>>;
 
     return Task<pair_type()>(
         [range, fn = std::move(fn), timeout, tArgs = std::make_tuple(std::forward<Args>(args)...)]() mutable
         {
-            auto funcs = aux::transform(range, tArgs);
-            return aux::getOrderWithResultPair(std::move(fn), std::move(funcs), timeout);
+            try
+            {
+                auto funcs = aux::transform(range, tArgs);
+                return aux::getOrderWithResultPair(std::move(fn), std::move(funcs), timeout);
+            }
+            catch (...)
+            {
+                return std::make_pair(-1, std::optional<result_type>());
+            }
         });
 }
 
@@ -661,8 +680,12 @@ public:
 
         try
         {
-            auto [index, result] = fut.get();
-            return std::make_pair(tasks_[index].first, result);
+            auto [index, result_opt] = fut.get();
+            if (index >= 0 && result_opt && static_cast<size_t>(index) < tasks_.size())
+            {
+                return std::make_pair(tasks_[index].first, *result_opt);
+            }
+            return std::nullopt;
         }
         catch (...)
         {
@@ -691,7 +714,7 @@ public:
         auto fut = any_with_task.run();
 
         auto [index, result_opt] = fut.get();
-        if (index >= 0 && static_cast<size_t>(index) < tasks_.size() && result_opt)
+        if (index >= 0 && result_opt && static_cast<size_t>(index) < tasks_.size())
         {
             return std::make_pair(tasks_[static_cast<size_t>(index)].first, *result_opt);
         }
@@ -720,19 +743,19 @@ public:
 
         try
         {
-            auto task_results = fut.get();
-            for (size_t i = 0; i < tasks_.size(); ++i)
+            auto task_results_opt = fut.get();
+            if (task_results_opt)
             {
-                results.emplace_back(tasks_[i].first, task_results[i]);
+                auto& task_results = *task_results_opt;
+                for (size_t i = 0; i < task_results.size() && i < tasks_.size(); ++i)
+                {
+                    results.emplace_back(tasks_[i].first, task_results[i]);
+                }
             }
         }
         catch (...)
         {
-            // Return partial results on timeout
-            for (size_t i = 0; i < results.size(); ++i)
-            {
-                results.emplace_back(tasks_[i].first, Ret{});
-            }
+            // Return empty results on failure
         }
         return results;
     }
@@ -759,13 +782,19 @@ public:
 
         try
         {
-            auto result = fut.get();
-            // Find which task produced the best result
-            for (size_t i = 0; i < tasks_.size(); ++i)
+            auto result_opt = fut.get();
+            if (!result_opt)
             {
-                if (tasks_[i].second.get(args...) == result)
+                return std::nullopt;
+            }
+
+            // Find which task produced the best result
+            auto results = execute_all(args..., timeout);
+            for (auto& [name, value] : results)
+            {
+                if (value == *result_opt)
                 {
-                    return std::make_pair(tasks_[i].first, result);
+                    return std::make_pair(name, value);
                 }
             }
             return std::nullopt;
@@ -797,7 +826,7 @@ public:
         auto fut = order_with_task.run();
 
         auto [index, result_opt] = fut.get();
-        if (result_opt && index < tasks_.size())
+        if (index >= 0 && result_opt && static_cast<size_t>(index) < tasks_.size())
         {
             return std::make_pair(tasks_[index].first, *result_opt);
         }
