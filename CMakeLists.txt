@@ -72,7 +72,7 @@ set_target_properties(${PROJECT_NAME} PROPERTIES INTERPROCEDURAL_OPTIMIZATION_RE
 
 if (HYPARA_ENABLE_SAMPLE)
   set(SAMPLE_NAME ${PROJECT_NAME}-sample)
-  add_executable(${SAMPLE_NAME} sample/main.cpp)
+  add_executable(${SAMPLE_NAME} sample/main.cpp hypara.hpp)
   target_link_libraries(${SAMPLE_NAME} ${PROJECT_NAME})
   set_target_properties(${SAMPLE_NAME} PROPERTIES INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
 endif ()
@@ -86,7 +86,7 @@ if (HYPARA_ENABLE_TEST)
   FetchContent_MakeAvailable(Catch2)
 
   set(TEST_NAME ${PROJECT_NAME}-test)
-  add_executable(${TEST_NAME} test/main.cpp)
+  add_executable(${TEST_NAME} test/main.cpp hypara.hpp)
   target_link_libraries(${TEST_NAME} ${PROJECT_NAME} Catch2::Catch2WithMain)
   set_target_properties(${TEST_NAME} PROPERTIES INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
 endif ()

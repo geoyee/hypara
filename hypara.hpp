@@ -430,9 +430,8 @@ auto getOrderWithResultPair(Func&& checkFun, Range&& funcs, std::chrono::millise
  * \return Task<std::optional<std::vector<result_type>>()> Task producing the results (nullopt on failure)
  */
 template<typename Range, typename... Args>
-inline auto All(const Range& range,
-                std::chrono::milliseconds timeout,
-                Args&&...args) -> Task<std::optional<std::vector<typename Range::value_type::return_type>>()>
+inline auto All(const Range& range, std::chrono::milliseconds timeout, Args&&...args)
+    -> Task<std::optional<std::vector<typename Range::value_type::return_type>>()>
 {
     using result_type = typename Range::value_type::return_type;
     using vector_type = std::vector<result_type>;
@@ -526,9 +525,8 @@ inline auto Best(Func fn, const Range& range, std::chrono::milliseconds timeout,
  * \return Task<std::pair<int, std::optional<result_type>>()> Task producing index and result (-1 on failure)
  */
 template<typename Range, typename... Args>
-inline auto Any(const Range& range,
-                std::chrono::milliseconds timeout,
-                Args&&...args) -> Task<std::pair<int, std::optional<typename Range::value_type::return_type>>()>
+inline auto Any(const Range& range, std::chrono::milliseconds timeout, Args&&...args)
+    -> Task<std::pair<int, std::optional<typename Range::value_type::return_type>>()>
 {
     using result_type = typename Range::value_type::return_type;
     using pair_type = std::pair<int, std::optional<result_type>>;
@@ -789,7 +787,7 @@ public:
             }
 
             // Find which task produced the best result
-            auto results = execute_all(args..., timeout);
+            auto results = execute_all(std::forward<Args>(args)..., timeout);
             for (auto& [name, value] : results)
             {
                 if (value == *result_opt)
